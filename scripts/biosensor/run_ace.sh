@@ -6,6 +6,9 @@ NAME="Ace"
 TARGET="inputs/2Z1P.pdb"
 HOTSPOTS="A180,A182,A193,A195"   # spot #1   (backups: #2 A206,A300,A301,A304   #3 A146,A147,A158)
 
+NUM_DESIGNS=1000          # full run (100 was the pilot)
+SEQS_PER_STRUCT=2         # at 1000 backbones, 2 seqs each keeps RF2 tractable (~2000 seqs/target)
+
 # To add Rosetta ddG, point this at your PyRosetta env's python (see README):
 # ROSETTA_CMD="$HOME/envs/pyrosetta/bin/python scripts/biosensor/score_rosetta.py"
 

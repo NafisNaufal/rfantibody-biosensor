@@ -36,11 +36,12 @@ submit.slurm                            SLURM job for one A100
 | 2 | EbpC | `inputs/EBPC_9LLW.pdb` | `A61,A62,A63,A64,A65,A67`    | `designs/EbpC/` |
 | 3 | Esp  | `inputs/AF_Esp.pdb`    | `A69,A71,A74`                | `designs/Esp/`  |
 
-Shared (default in `_pipeline.sh`): framework `inputs/Scaffold.pdb`, loops
-`H1:10,H2:6,H3:16`, `-n 100`, `--deterministic`. **Backup hotspots** (#2/#3) are
-in each wrapper — swap the `HOTSPOTS=` line if spot #1 docks poorly. Any tunable
-(`NUM_DESIGNS`, cutoffs, `CLEAN`, …) can be overridden by setting it in the wrapper
-before the `source` line.
+Shared: framework `inputs/Scaffold.pdb`, loops `H1:10,H2:6,H3:16`,
+`--deterministic`. Each wrapper sets **`NUM_DESIGNS=1000`** and
+**`SEQS_PER_STRUCT=2`** (full run; at 1000 backbones, 2 seqs each keeps RF2
+tractable). For a quick pilot, set `NUM_DESIGNS=100` in a wrapper. **Backup
+hotspots** (#2/#3) are in each wrapper — swap the `HOTSPOTS=` line if spot #1
+docks poorly. Any tunable (cutoffs, `CLEAN`, …) can be overridden the same way.
 
 ## How to run
 
@@ -55,12 +56,15 @@ Then interactively (on a GPU node) or via SLURM:
 
 ```bash
 bash scripts/biosensor/run_ace.sh     # one target
-bash scripts/biosensor/run_all.sh     # all three + summary
-sbatch scripts/biosensor/submit.slurm # edit partition/account first
+bash scripts/biosensor/run_all.sh     # all three + summary (long; interactive)
+sbatch scripts/biosensor/submit.slurm # one job PER target (array); set --time + partition first
+uv run python scripts/biosensor/summarize.py   # cross-target table, after all 3 finish
 ```
 
-> - Runs are **sequential** (one A100). **First run needs internet** (login node) so
->   the isolated PRODIGY env installs once; after that it's cached.
+> - `submit.slurm` is a **per-target job array** (`%1` = one at a time on your single
+>   A100); set `--time` from your pilot's `run.log` total × ~10, capped at your
+>   cluster's max. **First run needs internet** (login node) so the isolated PRODIGY
+>   env installs once; after that it's cached.
 > - **Re-runs are idempotent**: each run wipes that target's `designs/<Target>/`
 >   first (`CLEAN=true`). Set `CLEAN=false` in a wrapper to keep/resume instead.
 > - Everything is mirrored to `designs/<Target>/run.log`, and each step prints its

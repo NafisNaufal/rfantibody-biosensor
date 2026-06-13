@@ -13,7 +13,7 @@ for target in ace ebpc esp; do
     echo "############################################################"
     echo "#  Starting $target pipeline"
     echo "############################################################"
-    bash "$SCRIPT_DIR/run_${target}.sh"
+    bash "$SCRIPT_DIR/run_${target}.sh" || echo "WARNING: $target pipeline exited non-zero -- continuing to next target."
 done
 
 echo ""

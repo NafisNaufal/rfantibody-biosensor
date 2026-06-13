@@ -60,6 +60,14 @@ uv run python scripts/biosensor/filter_backbones.py \
     --break-cutoff "$BREAK_CUTOFF" --contact-cutoff "$CONTACT_CUTOFF" --overwrite
 _done "[2/5]"
 
+# stop cleanly if nothing survived -- avoids crashing MPNN/RF2 on an empty quiver
+N_FILT=$(grep -c '^QV_TAG' "$FILT" 2>/dev/null || true); N_FILT=${N_FILT:-0}
+echo "  ($N_FILT backbones passed the geometry filter)"
+if [ "$N_FILT" -eq 0 ]; then
+    echo "WARNING: 0 backbones passed for $NAME (poor hotspot/dock?). Skipping steps 3-5."
+    exit 0
+fi
+
 # ---- step 3: ProteinMPNN ---------------------------------------------------
 _t "[3/5] ProteinMPNN ($SEQS_PER_STRUCT seqs/backbone)"
 uv run proteinmpnn \
