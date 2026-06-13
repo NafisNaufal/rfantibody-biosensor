@@ -1,3 +1,6 @@
+# RFantibody clone (created by setup.sh)
+rfantibody/
+
 # pipeline outputs (regenerated per run)
 designs/
 *.qv
