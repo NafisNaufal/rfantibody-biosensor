@@ -1,0 +1,12 @@
+# pipeline outputs (regenerated per run)
+designs/
+*.qv
+
+# python / env
+__pycache__/
+*.pyc
+.venv/
+uv.lock
+
+# os
+.DS_Store
