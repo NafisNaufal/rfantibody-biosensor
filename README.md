@@ -6,25 +6,39 @@ proteins (Ace, EbpC, Esp), for an *E. coli* whole-cell biosensor. This is a
 — it adds a `scripts/biosensor/` pipeline + the prepared target structures, and
 does **not** modify any RFantibody code.
 
-## Prerequisites
+## Setup
 
-A working RFantibody clone on your machine/HPC with the env ready and weights
-downloaded (i.e. `uv run rfdiffusion --help` works).
+Needs [`uv`](https://docs.astral.sh/uv/) and an NVIDIA GPU. Two cases:
 
-## Install (drop into your RFantibody clone)
+### A) From scratch (no RFantibody yet)
+
+```bash
+# 1. RFantibody itself
+git clone https://github.com/RosettaCommons/RFantibody.git
+cd RFantibody
+uv sync                              # build the env (Python 3.10, torch, dgl, ...)
+bash include/download_weights.sh     # model weights (several GB)
+
+# 2. this add-on, dropped on top
+git clone https://github.com/NafisNaufal/rfantibody-biosensor.git /tmp/biosensor
+bash /tmp/biosensor/install.sh "$PWD"
+```
+
+### B) Into an existing RFantibody clone
 
 ```bash
 git clone https://github.com/NafisNaufal/rfantibody-biosensor.git
 bash rfantibody-biosensor/install.sh /path/to/RFantibody
 ```
 
-That copies `scripts/biosensor/` and the four input PDBs into your existing
-RFantibody clone — reusing its environment and weights (nothing to re-download).
+`install.sh` copies `scripts/biosensor/` and the four input PDBs into the
+RFantibody clone (it doesn't touch any RFantibody code).
 
-Then run the campaign:
+## Run
 
 ```bash
 cd /path/to/RFantibody
+uv run rfdiffusion --help                  # sanity check the env
 bash scripts/biosensor/run_all.sh          # or: sbatch scripts/biosensor/submit.slurm
 ```
 
