@@ -72,6 +72,7 @@ fi
 _t "[3/5] ProteinMPNN ($SEQS_PER_STRUCT seqs/backbone)"
 uv run proteinmpnn \
     --input-quiver "$FILT" --output-quiver "$MPNN" \
+    --loops H1,H2,H3 \
     --seqs-per-struct "$SEQS_PER_STRUCT" --temperature "$MPNN_TEMP"
 _done "[3/5]"
 
