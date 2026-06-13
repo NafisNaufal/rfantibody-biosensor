@@ -25,7 +25,6 @@ filter_backbones.py                     step 2: Cα-break + docking filter
 select_designs.py                       step 5: pAE/RMSD/PRODIGY(/Rosetta) filter + rank + cluster
 score_rosetta.py                        optional Rosetta interface ddG (runs in your PyRosetta env)
 summarize.py                            combine all targets into designs/SUMMARY.csv
-submit.slurm                            SLURM job for one A100
 ```
 
 ## The 3 experiments
@@ -38,37 +37,23 @@ submit.slurm                            SLURM job for one A100
 
 Shared: framework `inputs/Scaffold.pdb`, loops `H1:10,H2:6,H3:16`,
 `--deterministic`. Each wrapper sets **`NUM_DESIGNS=1000`** and
-**`SEQS_PER_STRUCT=2`** (full run; at 1000 backbones, 2 seqs each keeps RF2
-tractable). For a quick pilot, set `NUM_DESIGNS=100` in a wrapper. **Backup
-hotspots** (#2/#3) are in each wrapper — swap the `HOTSPOTS=` line if spot #1
-docks poorly. Any tunable (cutoffs, `CLEAN`, …) can be overridden the same way.
+**`SEQS_PER_STRUCT=4`**. For a quick pilot, set `NUM_DESIGNS=20` in a wrapper.
+**Backup hotspots** (#2/#3) are in each wrapper — swap the `HOTSPOTS=` line if
+spot #1 docks poorly. Any tunable (cutoffs, `CLEAN`, …) can be overridden the same way.
 
 ## How to run
 
-Sanity check on the HPC (from the repo root):
-
 ```bash
-nvidia-smi                       # A100 visible?
-uv run rfdiffusion --help        # env + weights OK?
+# one target
+bash scripts/biosensor/run_ace.sh
+
+# all three + summary
+bash scripts/biosensor/run_all.sh
 ```
 
-Then interactively (on a GPU node) or via SLURM:
-
-```bash
-bash scripts/biosensor/run_ace.sh     # one target
-bash scripts/biosensor/run_all.sh     # all three + summary (long; interactive)
-sbatch scripts/biosensor/submit.slurm # one job PER target (array); set --time + partition first
-uv run python scripts/biosensor/summarize.py   # cross-target table, after all 3 finish
-```
-
-> - `submit.slurm` is a **per-target job array** (`%1` = one at a time on your single
->   A100); set `--time` from your pilot's `run.log` total × ~10, capped at your
->   cluster's max. **First run needs internet** (login node) so the isolated PRODIGY
->   env installs once; after that it's cached.
-> - **Re-runs are idempotent**: each run wipes that target's `designs/<Target>/`
->   first (`CLEAN=true`). Set `CLEAN=false` in a wrapper to keep/resume instead.
-> - Everything is mirrored to `designs/<Target>/run.log`, and each step prints its
->   elapsed time.
+> - **First run needs internet** (login node) so PRODIGY installs once; after that it's cached.
+> - **Re-runs wipe and restart** (`CLEAN=true`). Set `CLEAN=false` in a wrapper to skip completed steps.
+> - Everything is logged to `designs/<Target>/run.log` with per-step timing.
 
 ## The geometry filter (step 2)
 
@@ -138,7 +123,7 @@ unset, the step is simply skipped and PRODIGY carries the energy term.
 Each target, in `designs/<Target>/`:
 
 ```
-1_backbones.qv     RFdiffusion output (all 100)
+1_backbones.qv     RFdiffusion output (all 1000)
 2_filtered.qv      survived the geometry filter (step 2)
 3_mpnn.qv          sequences assigned
 4_rf2.qv           RF2 structures + confidence scores
@@ -156,9 +141,5 @@ three targets together (by PRODIGY ΔG, then Rosetta ddG, then pAE).
 - Inputs are used **as-is** — waters are harmless (RFdiffusion reads only `ATOM`
   records) and chains stay `A` (hotspot letters match). RFdiffusion/MPNN/RF2 are
   left exactly as specified (the complex is preserved for downstream MD).
-- This is a **pilot** (100/target). If a target gives clean, well-docked, low-pAE,
-  well-clustered designs, raise `NUM_DESIGNS` (1k+) in that wrapper.
-- The filters are stringent by design — expect only a handful of survivors per
-  100-backbone pilot. If nothing passes, open `5_selection.csv`: it's usually pAE
-  or RMSD, which points back to the dock/hotspots, not the sequence.
-```
+- The filters are stringent by design. If nothing passes, open `5_selection.csv`: it's usually pAE
+  or RMSD, which points back to the hotspots, not the sequence.
