@@ -23,7 +23,7 @@ set -euo pipefail
 : "${RMSD_CUTOFF:=2.0}"            # step 5: dock AND CDR RMSD both < this
 : "${DG_CUTOFF:=-10.0}"            # step 5: PRODIGY ΔG must be < this (kcal/mol)
 : "${TOP_N:=10}"                   # step 5: number of distinct winners to extract
-: "${ROSETTA_CMD:=}"              # step 5: empty = skip Rosetta ddG
+: "${ROSETTA_CMD:=}"              # step 5: empty = auto-detect or skip Rosetta ddG
 : "${CLEAN:=false}"                # false = resume from last completed chunk; true = wipe and restart
 
 # ---- setup -----------------------------------------------------------------
@@ -36,6 +36,15 @@ if [ "$CLEAN" = "true" ]; then rm -rf "$OUTDIR"; fi
 mkdir -p "$OUTDIR" "$CHUNKS"
 LOG="$OUTDIR/run.log"
 exec > >(tee -a "$LOG") 2>&1
+
+# auto-detect PyRosetta venv installed by setup_rosetta.sh
+if [ -z "$ROSETTA_CMD" ]; then
+    _ROSETTA_PY="$PROJECT_ROOT/.venv-rosetta/bin/python"
+    if [ -f "$_ROSETTA_PY" ] && "$_ROSETTA_PY" -c "import pyrosetta" 2>/dev/null; then
+        ROSETTA_CMD="$_ROSETTA_PY scripts/biosensor/score_rosetta.py"
+        echo "  [auto] PyRosetta detected — Rosetta ddG enabled"
+    fi
+fi
 
 BB="$OUTDIR/1_backbones.qv"; FILT="$OUTDIR/2_filtered.qv"
 MPNN="$OUTDIR/3_mpnn.qv";    RF2="$OUTDIR/4_rf2.qv"
