@@ -41,7 +41,7 @@ exec > >(tee -a "$LOG") 2>&1
 if [ -z "$ROSETTA_CMD" ]; then
     _ROSETTA_PY="$PROJECT_ROOT/.venv-rosetta/bin/python"
     if [ -f "$_ROSETTA_PY" ] && "$_ROSETTA_PY" -c "import pyrosetta" 2>/dev/null; then
-        ROSETTA_CMD="$_ROSETTA_PY scripts/biosensor/score_rosetta.py"
+        ROSETTA_CMD="$_ROSETTA_PY $PROJECT_ROOT/scripts/biosensor/score_rosetta.py"
         echo "  [auto] PyRosetta detected — Rosetta ddG enabled"
     fi
 fi
@@ -139,9 +139,11 @@ if [ -f "$OUTDIR/.step3.done" ]; then
     _skip 3
 else
     _t "[3/5] ProteinMPNN ($SEQS_PER_STRUCT seqs/backbone, chunk=$CHUNK_SIZE)"
-    # split filtered quiver into input chunks (idempotent: skip if already split)
-    if ! ls "$CHUNKS"/3_in_*.qv >/dev/null 2>&1; then
+    # split filtered quiver into input chunks; sentinel guards against partial splits
+    if [ ! -f "$CHUNKS/.3_split.done" ]; then
+        rm -f "$CHUNKS"/3_in_*.qv
         _split_quiver "$FILT" "$CHUNKS/3_in_" "$CHUNK_SIZE" > /dev/null
+        touch "$CHUNKS/.3_split.done"
     fi
     for CHUNK_IN in "$CHUNKS"/3_in_*.qv; do
         IDX="${CHUNK_IN##*/3_in_}"; IDX="${IDX%.qv}"
@@ -157,6 +159,7 @@ else
             --input-quiver "$CHUNK_IN" --output-quiver "$CHUNK_OUT" \
             --loops H1,H2,H3 \
             --seqs-per-struct "$SEQS_PER_STRUCT" --temperature "$MPNN_TEMP"
+        [ -s "$CHUNK_OUT" ] || { echo "ERROR: ProteinMPNN chunk $IDX produced empty output"; exit 1; }
         touch "$CHUNK_DONE"
     done
     rm -f "$MPNN"
@@ -170,8 +173,10 @@ if [ -f "$OUTDIR/.step4.done" ]; then
     _skip 4
 else
     _t "[4/5] RF2 ($RF2_RECYCLES recycles, chunk=$CHUNK_SIZE)"
-    if ! ls "$CHUNKS"/4_in_*.qv >/dev/null 2>&1; then
+    if [ ! -f "$CHUNKS/.4_split.done" ]; then
+        rm -f "$CHUNKS"/4_in_*.qv
         _split_quiver "$MPNN" "$CHUNKS/4_in_" "$CHUNK_SIZE" > /dev/null
+        touch "$CHUNKS/.4_split.done"
     fi
     for CHUNK_IN in "$CHUNKS"/4_in_*.qv; do
         IDX="${CHUNK_IN##*/4_in_}"; IDX="${IDX%.qv}"
@@ -186,6 +191,7 @@ else
         uv run rf2 \
             --input-quiver "$CHUNK_IN" --output-quiver "$CHUNK_OUT" \
             --num-recycles "$RF2_RECYCLES" --hotspot-show-prop "$RF2_HOTSPOT_SHOW"
+        [ -s "$CHUNK_OUT" ] || { echo "ERROR: RF2 chunk $IDX produced empty output"; exit 1; }
         touch "$CHUNK_DONE"
     done
     rm -f "$RF2"
