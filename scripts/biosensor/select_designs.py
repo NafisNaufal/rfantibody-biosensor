@@ -3,16 +3,15 @@
 Post-RF2 selection + ranking for the nanobody campaign (pipeline Step 5).
 
 Reads an RF2 output quiver (whose QV_SCORE lines already carry interaction_pae
-and the RMSD metrics), applies hard filters, scores binding energy (PRODIGY,
-optionally Rosetta ddG), ranks survivors with a weighted composite, then
-diversity-clusters them so the winners you order are genuinely distinct.
+and the RMSD metrics), applies hard filters, scores binding energy (PRODIGY),
+ranks survivors with a weighted composite, then diversity-clusters them so the
+winners you order are genuinely distinct.
 
 Hard filters (a design must pass ALL):
     interaction_pae               < --pae-cutoff   (default 10)
     target_aligned_antibody_rmsd  < --rmsd-cutoff  (default 2.0)   # dock held
     target_aligned_cdr_rmsd       < --rmsd-cutoff  (default 2.0)   # loops landed
     prodigy_dg (kcal/mol)         < --dg-cutoff    (default -10)   # PRODIGY affinity
-    rosetta_ddg                   < --ddg-cutoff   (default off)   # only if --rosetta-cmd
 
 Ranking (survivors only): min-max normalise each metric (0 = best) and combine
 with weights favouring binding energy, then interface confidence, then H3 loop
@@ -21,7 +20,6 @@ clustered by CDR (H1+H2+H3) sequence identity; winners = top-N cluster reps.
 
 External scorers run in isolated envs so they can't perturb the GPU stack:
   PRODIGY:  uv run --no-project --with prodigy-prot prodigy <pdb> --selection H T
-  Rosetta:  <pyrosetta-env-python> scripts/biosensor/score_rosetta.py <pdb>   (--rosetta-cmd)
 """
 import argparse
 import os
@@ -31,12 +29,11 @@ import subprocess
 import sys
 import tempfile
 
-# metric -> weight (all "lower is better", incl. dG/ddG since more-negative = better)
+# metric -> weight (all "lower is better", incl. dG since more-negative = better)
 WEIGHTS = {
-    "prodigy_dg":                   0.30,   # PRODIGY predicted affinity
-    "rosetta_ddg":                  0.20,   # Rosetta interface ddG (if available)
-    "interaction_pae":              0.20,   # interface confidence
-    "framework_aligned_H3_rmsd":    0.15,   # H3 loop fidelity (hardest CDR)
+    "prodigy_dg":                   0.40,   # PRODIGY predicted affinity
+    "interaction_pae":              0.25,   # interface confidence
+    "framework_aligned_H3_rmsd":    0.20,   # H3 loop fidelity (hardest CDR)
     "target_aligned_antibody_rmsd": 0.10,   # dock reproduced
     "target_aligned_cdr_rmsd":      0.05,   # CDRs reproduced
 }
@@ -122,10 +119,6 @@ def run_prodigy(pdb_lines, cmd, chains, temp):
     return dg, kd, note
 
 
-def run_rosetta(pdb_lines, cmd):
-    ddg, note = _run_energy(pdb_lines, cmd, r"\bddg=(-?\d+\.?\d*)")
-    return ddg, note
-
 
 def cdr_sequence(pdb_lines):
     """Concatenated H1+H2+H3 one-letter sequence (the only designed residues)."""
@@ -188,8 +181,6 @@ def main():
     ap.add_argument("--pae-cutoff", type=float, default=10.0)
     ap.add_argument("--rmsd-cutoff", type=float, default=2.0)
     ap.add_argument("--dg-cutoff", type=float, default=-10.0)
-    ap.add_argument("--ddg-cutoff", type=float, default=None,
-                    help="optional hard cutoff on Rosetta ddG (default: rank only)")
     ap.add_argument("--top", type=int, default=10, help="number of cluster-rep winners to extract")
     ap.add_argument("--cluster-identity", type=float, default=0.90,
                     help="CDR identity for designs to share a cluster [0.90]")
@@ -197,9 +188,6 @@ def main():
     ap.add_argument("--chains", default="H T", help="PRODIGY partner chains [\"H T\"]")
     ap.add_argument("--prodigy-cmd", default="uv run --no-project --with prodigy-prot prodigy",
                     help="how to invoke prodigy (isolated env)")
-    ap.add_argument("--rosetta-cmd", default="",
-                    help="how to invoke score_rosetta.py (PyRosetta env python + script); "
-                         "empty = skip Rosetta ddG")
     ap.add_argument("--skip-prodigy", action="store_true",
                     help="skip PRODIGY: keep pAE+RMSD filters, drop dG from filter & ranking")
     args = ap.parse_args()
@@ -214,7 +202,6 @@ def main():
     designs = choose_best_entries(scores)
     chains = tuple(args.chains.split())
     prodigy_cmd = shlex.split(args.prodigy_cmd)
-    rosetta_cmd = shlex.split(args.rosetta_cmd)
 
     rows = []
     n_pae = n_rmsd = n_final = 0
@@ -228,7 +215,7 @@ def main():
         n_pae += int(pass_pae)
         n_rmsd += int(pass_pae and pass_rmsd)
 
-        dg = kd = rddg = float("nan")
+        dg = kd = float("nan")
         note = "skipped"
         cdrseq = ""
         # Only spend external scorers on designs that already cleared pAE + RMSD.
@@ -237,22 +224,19 @@ def main():
             cdrseq = cdr_sequence(lines)
             if not args.skip_prodigy:
                 dg, kd, note = run_prodigy(lines, prodigy_cmd, chains, args.prodigy_temp)
-            if rosetta_cmd:
-                rddg, _ = run_rosetta(lines, rosetta_cmd)
 
         pass_dg = True if args.skip_prodigy else (dg < args.dg_cutoff)
-        pass_ddg = True if (not rosetta_cmd or args.ddg_cutoff is None) else (rddg < args.ddg_cutoff)
-        pass_all = pass_pae and pass_rmsd and pass_dg and pass_ddg
+        pass_all = pass_pae and pass_rmsd and pass_dg
         n_final += int(pass_all)
 
         rows.append(dict(tag=tag, base=base, interaction_pae=pae,
                          target_aligned_antibody_rmsd=rdock,
                          target_aligned_cdr_rmsd=rcdr,
                          framework_aligned_H3_rmsd=h3,
-                         prodigy_dg=dg, prodigy_kd=kd, rosetta_ddg=rddg,
+                         prodigy_dg=dg, prodigy_kd=kd,
                          prodigy_note=note, cdr_seq=cdrseq,
                          pass_pae=pass_pae, pass_rmsd=pass_rmsd,
-                         pass_dg=pass_dg, pass_ddg=pass_ddg, pass_all=pass_all,
+                         pass_dg=pass_dg, pass_all=pass_all,
                          cluster="", cluster_rep=False))
 
     # ---- composite ranking over survivors (drop metrics with no finite values) ----
@@ -277,10 +261,10 @@ def main():
     # ---- write ranked CSV (all designs) ----
     csv_path = os.path.join(args.outdir, "5_selection.csv")
     cols = ["rank", "tag", "cluster", "cluster_rep", "pass_all", "composite",
-            "prodigy_dg", "prodigy_kd", "rosetta_ddg", "interaction_pae",
+            "prodigy_dg", "prodigy_kd", "interaction_pae",
             "target_aligned_antibody_rmsd", "target_aligned_cdr_rmsd",
             "framework_aligned_H3_rmsd", "cdr_seq",
-            "pass_pae", "pass_rmsd", "pass_dg", "pass_ddg", "prodigy_note"]
+            "pass_pae", "pass_rmsd", "pass_dg", "prodigy_note"]
     info = {r["tag"]: r for r in survivors}
     ordered = survivors + [r for r in rows if not r["pass_all"]]
     with open(csv_path, "w") as f:
@@ -314,18 +298,16 @@ def main():
     print(f"\nSelection over {total} designs:")
     print(f"  passed pAE  (<{args.pae_cutoff})       : {n_pae}")
     print(f"  + passed RMSD (<{args.rmsd_cutoff})      : {n_rmsd}")
-    energy = "PRODIGY" + ("+Rosetta" if rosetta_cmd else "")
-    print(f"  + passed energy [{energy}]   : {n_final}" if not args.skip_prodigy
+    print(f"  + passed energy [PRODIGY]    : {n_final}" if not args.skip_prodigy
           else f"  PRODIGY skipped                : {n_final} survivors")
     print(f"  -> {n_clusters} distinct clusters; ranked CSV: {csv_path}")
     if winners:
         print(f"  -> winners: {win_dir}/ (top {len(winners)} distinct designs)")
         b = winners[0]
-        extra = f" ddG={b['rosetta_ddg']:.1f}" if rosetta_cmd else ""
         print(f"  BEST: {b['base']}  pAE={b['interaction_pae']:.1f}"
               f"  dock={b['target_aligned_antibody_rmsd']:.2f}"
               f"  H3={b['framework_aligned_H3_rmsd']:.2f}"
-              f"  dG={b['prodigy_dg']:.1f}{extra}")
+              f"  dG={b['prodigy_dg']:.1f}")
     else:
         print("  No designs passed all filters — loosen cutoffs or inspect 5_selection.csv.")
 

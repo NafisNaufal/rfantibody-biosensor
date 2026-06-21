@@ -1,7 +1,6 @@
 # ============================================================================
 # Shared 5-step nanobody pipeline. SOURCED by run_<target>.sh after they set:
 #   NAME, TARGET, HOTSPOTS   (required)
-#   ROSETTA_CMD              (optional: PyRosetta python + score_rosetta.py)
 #   any tunable below        (optional: set before `source` to override)
 # Steps: RFdiffusion -> geometry filter -> ProteinMPNN -> RF2 -> select + rank
 # Adds: per-chunk resume (CLEAN=false default), per-step timing, run.log.
@@ -23,7 +22,6 @@ set -euo pipefail
 : "${RMSD_CUTOFF:=2.0}"            # step 5: dock AND CDR RMSD both < this
 : "${DG_CUTOFF:=-10.0}"            # step 5: PRODIGY ΔG must be < this (kcal/mol)
 : "${TOP_N:=10}"                   # step 5: number of distinct winners to extract
-: "${ROSETTA_CMD:=}"              # step 5: empty = auto-detect or skip Rosetta ddG
 : "${CLEAN:=false}"                # false = resume from last completed chunk; true = wipe and restart
 
 # ---- setup -----------------------------------------------------------------
@@ -36,15 +34,6 @@ if [ "$CLEAN" = "true" ]; then rm -rf "$OUTDIR"; fi
 mkdir -p "$OUTDIR" "$CHUNKS"
 LOG="$OUTDIR/run.log"
 exec > >(tee -a "$LOG") 2>&1
-
-# auto-detect PyRosetta venv installed by setup_rosetta.sh
-if [ -z "$ROSETTA_CMD" ]; then
-    _ROSETTA_PY="$PROJECT_ROOT/.venv-rosetta/bin/python"
-    if [ -f "$_ROSETTA_PY" ] && "$_ROSETTA_PY" -c "import pyrosetta" 2>/dev/null; then
-        ROSETTA_CMD="$_ROSETTA_PY $PROJECT_ROOT/scripts/biosensor/score_rosetta.py"
-        echo "  [auto] PyRosetta detected — Rosetta ddG enabled"
-    fi
-fi
 
 BB="$OUTDIR/1_backbones.qv"; FILT="$OUTDIR/2_filtered.qv"
 MPNN="$OUTDIR/3_mpnn.qv";    RF2="$OUTDIR/4_rf2.qv"
@@ -80,7 +69,6 @@ PYEOF
 
 echo "================ $NAME  @ $(date '+%Y-%m-%d %H:%M:%S') ================"
 echo "target=$TARGET  hotspots=$HOTSPOTS  loops=$LOOPS  n=$NUM_DESIGNS  chunk=$CHUNK_SIZE"
-[ -n "$ROSETTA_CMD" ] && echo "rosetta ddG: ON" || echo "rosetta ddG: off"
 
 # ---- step 1: RFdiffusion (chunked) -----------------------------------------
 if [ -f "$OUTDIR/.step1.done" ]; then
@@ -204,11 +192,11 @@ fi
 if [ -f "$OUTDIR/.step5.done" ]; then
     _skip 5
 else
-    _t "[5/5] Select + rank (pAE<$PAE_CUTOFF, RMSD<$RMSD_CUTOFF, dG<$DG_CUTOFF${ROSETTA_CMD:+, +Rosetta})"
+    _t "[5/5] Select + rank (pAE<$PAE_CUTOFF, RMSD<$RMSD_CUTOFF, dG<$DG_CUTOFF)"
     uv run python scripts/biosensor/select_designs.py \
         --input "$RF2" --outdir "$OUTDIR" \
         --pae-cutoff "$PAE_CUTOFF" --rmsd-cutoff "$RMSD_CUTOFF" --dg-cutoff "$DG_CUTOFF" \
-        --top "$TOP_N" --rosetta-cmd "$ROSETTA_CMD"
+        --top "$TOP_N"
     _done 5
 fi
 
