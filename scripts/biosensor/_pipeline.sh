@@ -12,8 +12,9 @@ set -euo pipefail
 : "${LOOPS:=H1:10,H2:6,H3:16}"     # = scaffold's native CDR lengths
 : "${NUM_DESIGNS:=100}"
 : "${CHUNK_SIZE:=50}"               # designs per GPU call (resume granularity)
-: "${BREAK_CUTOFF:=4.0}"           # step 2: reject Cα-Cα break > this (Å)
-: "${CONTACT_CUTOFF:=10.0}"        # step 2: reject undocked (CDR-target > this Å); <=0 off
+: "${GEOMETRY_FILTER:=false}"       # step 2: false = pass all backbones to MPNN (RF2 filters instead)
+: "${BREAK_CUTOFF:=4.0}"           # step 2: (only if GEOMETRY_FILTER=true) reject Cα-Cα break > this (Å)
+: "${CONTACT_CUTOFF:=10.0}"        # step 2: (only if GEOMETRY_FILTER=true) reject undocked > this (Å)
 : "${SEQS_PER_STRUCT:=4}"          # step 3
 : "${MPNN_TEMP:=0.1}"              # step 3: low temp = stable, expressible seqs
 : "${RF2_RECYCLES:=10}"            # step 4
@@ -106,20 +107,24 @@ fi
 # ---- step 2: geometry filter (GPU-free, fast — single pass) ----------------
 if [ -f "$OUTDIR/.step2.done" ]; then
     _skip 2
+elif [ "$GEOMETRY_FILTER" = "false" ]; then
+    echo ""
+    echo "[2/5] Geometry filter skipped — passing all backbones to ProteinMPNN"
+    cp "$BB" "$FILT"
+    _done 2
 else
     rm -f "$FILT"
-    _t "[2/5] Geometry filter (drop broken / undocked)"
+    _t "[2/5] Geometry filter (Cα break <${BREAK_CUTOFF}Å, contact <${CONTACT_CUTOFF}Å)"
     uv run python scripts/biosensor/filter_backbones.py \
         --input "$BB" --output "$FILT" --report "$OUTDIR/filter_report.csv" \
         --break-cutoff "$BREAK_CUTOFF" --contact-cutoff "$CONTACT_CUTOFF" --overwrite
     _done 2
 fi
 
-# stop cleanly if nothing survived
 N_FILT=$(grep -c '^QV_TAG' "$FILT" 2>/dev/null || true); N_FILT=${N_FILT:-0}
-echo "  ($N_FILT backbones passed the geometry filter)"
+echo "  ($N_FILT backbones proceeding to ProteinMPNN)"
 if [ "$N_FILT" -eq 0 ]; then
-    echo "WARNING: 0 backbones passed for $NAME (poor hotspot/dock?). Skipping steps 3-5."
+    echo "WARNING: 0 backbones for $NAME. Skipping steps 3-5."
     exit 0
 fi
 
