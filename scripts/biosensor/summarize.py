@@ -57,7 +57,7 @@ def main():
                                 fnum(r.get("interaction_pae"))))
 
     cols = ["overall_rank", "target", "tag", "prodigy_dg",
-            "interaction_pae", "target_aligned_antibody_rmsd",
+            "interaction_pae", "pred_lddt", "target_aligned_antibody_rmsd",
             "framework_aligned_H3_rmsd", "cdr_seq"]
     with open(out, "w", newline="") as f:
         w = csv.writer(f)
@@ -67,11 +67,12 @@ def main():
 
     print(f"\nCross-target winners: {len(winners)} distinct designs from {len(csvs)} targets")
     print(f"  -> {out}\n")
-    hdr = f"  {'#':>2}  {'target':<6} {'ΔG':>6} {'pAE':>5} {'dock':>5} {'H3':>5}  design"
+    hdr = f"  {'#':>2}  {'target':<6} {'ΔG':>6} {'pAE':>5} {'lDDT':>5} {'dock':>5} {'H3':>5}  design"
     print(hdr)
     for i, r in enumerate(winners[:args.top], 1):
         print(f"  {i:>2}  {r['target']:<6} {r.get('prodigy_dg',''):>6} "
-              f"{r.get('interaction_pae',''):>5} {r.get('target_aligned_antibody_rmsd',''):>5} "
+              f"{r.get('interaction_pae',''):>5} {r.get('pred_lddt',''):>5} "
+              f"{r.get('target_aligned_antibody_rmsd',''):>5} "
               f"{r.get('framework_aligned_H3_rmsd',''):>5}  {r.get('tag','')}")
 
 

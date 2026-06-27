@@ -181,6 +181,8 @@ def main():
     ap.add_argument("--pae-cutoff", type=float, default=10.0)
     ap.add_argument("--rmsd-cutoff", type=float, default=2.0)
     ap.add_argument("--dg-cutoff", type=float, default=-10.0)
+    ap.add_argument("--lddt-cutoff", type=float, default=0.8,
+                    help="min pred_lddt (RF2 structure confidence, 0-1) [0.8]")
     ap.add_argument("--top", type=int, default=10, help="number of cluster-rep winners to extract")
     ap.add_argument("--cluster-identity", type=float, default=0.90,
                     help="CDR identity for designs to share a cluster [0.90]")
@@ -204,39 +206,43 @@ def main():
     prodigy_cmd = shlex.split(args.prodigy_cmd)
 
     rows = []
-    n_pae = n_rmsd = n_final = 0
+    n_pae = n_rmsd = n_lddt = n_final = 0
     for base, (tag, m) in sorted(designs.items()):
         pae = m.get("interaction_pae", float("nan"))
         rdock = m.get("target_aligned_antibody_rmsd", float("nan"))
         rcdr = m.get("target_aligned_cdr_rmsd", float("nan"))
         h3 = m.get("framework_aligned_H3_rmsd", float("nan"))
+        lddt = m.get("pred_lddt", float("nan"))
         pass_pae = pae < args.pae_cutoff
         pass_rmsd = (rdock < args.rmsd_cutoff) and (rcdr < args.rmsd_cutoff)
+        pass_lddt = (lddt != lddt) or (lddt >= args.lddt_cutoff)  # NaN = pass (metric absent)
         n_pae += int(pass_pae)
         n_rmsd += int(pass_pae and pass_rmsd)
+        n_lddt += int(pass_pae and pass_rmsd and pass_lddt)
 
         dg = kd = float("nan")
         note = "skipped"
         cdrseq = ""
-        # Only spend external scorers on designs that already cleared pAE + RMSD.
-        if pass_pae and pass_rmsd:
+        # Only spend external scorers on designs that already cleared pAE + RMSD + lDDT.
+        if pass_pae and pass_rmsd and pass_lddt:
             lines = qin.get_pdblines(tag)
             cdrseq = cdr_sequence(lines)
             if not args.skip_prodigy:
                 dg, kd, note = run_prodigy(lines, prodigy_cmd, chains, args.prodigy_temp)
 
         pass_dg = True if args.skip_prodigy else (dg < args.dg_cutoff)
-        pass_all = pass_pae and pass_rmsd and pass_dg
+        pass_all = pass_pae and pass_rmsd and pass_lddt and pass_dg
         n_final += int(pass_all)
 
         rows.append(dict(tag=tag, base=base, interaction_pae=pae,
                          target_aligned_antibody_rmsd=rdock,
                          target_aligned_cdr_rmsd=rcdr,
                          framework_aligned_H3_rmsd=h3,
+                         pred_lddt=lddt,
                          prodigy_dg=dg, prodigy_kd=kd,
                          prodigy_note=note, cdr_seq=cdrseq,
                          pass_pae=pass_pae, pass_rmsd=pass_rmsd,
-                         pass_dg=pass_dg, pass_all=pass_all,
+                         pass_lddt=pass_lddt, pass_dg=pass_dg, pass_all=pass_all,
                          cluster="", cluster_rep=False))
 
     # ---- composite ranking over survivors (drop metrics with no finite values) ----
@@ -261,10 +267,10 @@ def main():
     # ---- write ranked CSV (all designs) ----
     csv_path = os.path.join(args.outdir, "5_selection.csv")
     cols = ["rank", "tag", "cluster", "cluster_rep", "pass_all", "composite",
-            "prodigy_dg", "prodigy_kd", "interaction_pae",
+            "prodigy_dg", "prodigy_kd", "interaction_pae", "pred_lddt",
             "target_aligned_antibody_rmsd", "target_aligned_cdr_rmsd",
             "framework_aligned_H3_rmsd", "cdr_seq",
-            "pass_pae", "pass_rmsd", "pass_dg", "prodigy_note"]
+            "pass_pae", "pass_rmsd", "pass_lddt", "pass_dg", "prodigy_note"]
     info = {r["tag"]: r for r in survivors}
     ordered = survivors + [r for r in rows if not r["pass_all"]]
     with open(csv_path, "w") as f:
@@ -298,6 +304,7 @@ def main():
     print(f"\nSelection over {total} designs:")
     print(f"  passed pAE  (<{args.pae_cutoff})       : {n_pae}")
     print(f"  + passed RMSD (<{args.rmsd_cutoff})      : {n_rmsd}")
+    print(f"  + passed lDDT (>={args.lddt_cutoff})    : {n_lddt}")
     print(f"  + passed energy [PRODIGY]    : {n_final}" if not args.skip_prodigy
           else f"  PRODIGY skipped                : {n_final} survivors")
     print(f"  -> {n_clusters} distinct clusters; ranked CSV: {csv_path}")

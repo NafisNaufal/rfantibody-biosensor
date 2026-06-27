@@ -21,6 +21,7 @@ set -euo pipefail
 : "${PAE_CUTOFF:=10}"              # step 5
 : "${RMSD_CUTOFF:=2.0}"            # step 5: dock AND CDR RMSD both < this
 : "${DG_CUTOFF:=-10.0}"            # step 5: PRODIGY ΔG must be < this (kcal/mol)
+: "${LDDT_CUTOFF:=0.8}"           # step 5: RF2 pred_lddt must be >= this (0-1)
 : "${TOP_N:=10}"                   # step 5: number of distinct winners to extract
 : "${CLEAN:=false}"                # false = resume from last completed chunk; true = wipe and restart
 
@@ -192,10 +193,11 @@ fi
 if [ -f "$OUTDIR/.step5.done" ]; then
     _skip 5
 else
-    _t "[5/5] Select + rank (pAE<$PAE_CUTOFF, RMSD<$RMSD_CUTOFF, dG<$DG_CUTOFF)"
+    _t "[5/5] Select + rank (pAE<$PAE_CUTOFF, RMSD<$RMSD_CUTOFF, lDDT>=$LDDT_CUTOFF, dG<$DG_CUTOFF)"
     uv run python scripts/biosensor/select_designs.py \
         --input "$RF2" --outdir "$OUTDIR" \
-        --pae-cutoff "$PAE_CUTOFF" --rmsd-cutoff "$RMSD_CUTOFF" --dg-cutoff "$DG_CUTOFF" \
+        --pae-cutoff "$PAE_CUTOFF" --rmsd-cutoff "$RMSD_CUTOFF" \
+        --lddt-cutoff "$LDDT_CUTOFF" --dg-cutoff "$DG_CUTOFF" \
         --top "$TOP_N"
     _done 5
 fi
