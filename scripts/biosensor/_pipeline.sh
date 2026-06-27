@@ -12,7 +12,7 @@ set -euo pipefail
 : "${LOOPS:=H1:10,H2:6,H3:16}"     # = scaffold's native CDR lengths
 : "${NUM_DESIGNS:=100}"
 : "${CHUNK_SIZE:=50}"               # designs per GPU call (resume granularity)
-: "${BREAK_CUTOFF:=4.5}"           # step 2: reject Cα-Cα break > this (Å)
+: "${BREAK_CUTOFF:=4.0}"           # step 2: reject Cα-Cα break > this (Å)
 : "${CONTACT_CUTOFF:=10.0}"        # step 2: reject undocked (CDR-target > this Å); <=0 off
 : "${SEQS_PER_STRUCT:=4}"          # step 3
 : "${MPNN_TEMP:=0.1}"              # step 3: low temp = stable, expressible seqs
@@ -21,7 +21,7 @@ set -euo pipefail
 : "${PAE_CUTOFF:=10}"              # step 5
 : "${RMSD_CUTOFF:=2.0}"            # step 5: dock AND CDR RMSD both < this
 : "${DG_CUTOFF:=-10.0}"            # step 5: PRODIGY ΔG must be < this (kcal/mol)
-: "${LDDT_CUTOFF:=0.8}"           # step 5: RF2 pred_lddt must be >= this (0-1)
+: "${LDDT_CUTOFF:=0.9}"           # step 5: RF2 pred_lddt must be >= this (0-1)
 : "${TOP_N:=10}"                   # step 5: number of distinct winners to extract
 : "${CLEAN:=false}"                # false = resume from last completed chunk; true = wipe and restart
 
