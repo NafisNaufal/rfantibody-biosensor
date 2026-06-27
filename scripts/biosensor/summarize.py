@@ -6,7 +6,7 @@ designs/<Target>/5_selection.csv into one ranked table.
 Each target's `composite` is normalised *within* that target, so it is not
 comparable across targets. We therefore rank the combined winners by the
 absolute, cross-comparable metrics: PRODIGY ΔG (most negative first), then
-Rosetta ddG, then interface pAE.
+interface pAE.
 
 Writes designs/SUMMARY.csv and prints the overall top designs. Pure stdlib.
 """
@@ -45,7 +45,6 @@ def main():
         target = os.path.basename(os.path.dirname(path))
         with open(path) as f:
             for row in csv.DictReader(f):
-                # keep only the distinct winners (cluster representatives that passed)
                 if row.get("pass_all") == "1" and row.get("cluster_rep") == "1":
                     row["target"] = target
                     winners.append(row)
@@ -55,10 +54,9 @@ def main():
         return
 
     winners.sort(key=lambda r: (fnum(r.get("prodigy_dg")),
-                                fnum(r.get("rosetta_ddg")),
                                 fnum(r.get("interaction_pae"))))
 
-    cols = ["overall_rank", "target", "tag", "prodigy_dg", "rosetta_ddg",
+    cols = ["overall_rank", "target", "tag", "prodigy_dg",
             "interaction_pae", "target_aligned_antibody_rmsd",
             "framework_aligned_H3_rmsd", "cdr_seq"]
     with open(out, "w", newline="") as f:
@@ -69,11 +67,10 @@ def main():
 
     print(f"\nCross-target winners: {len(winners)} distinct designs from {len(csvs)} targets")
     print(f"  -> {out}\n")
-    hdr = f"  {'#':>2}  {'target':<6} {'ΔG':>6} {'ddG':>7} {'pAE':>5} {'dock':>5} {'H3':>5}  design"
+    hdr = f"  {'#':>2}  {'target':<6} {'ΔG':>6} {'pAE':>5} {'dock':>5} {'H3':>5}  design"
     print(hdr)
     for i, r in enumerate(winners[:args.top], 1):
-        dg = r.get("prodigy_dg", ""); ddg = r.get("rosetta_ddg", "")
-        print(f"  {i:>2}  {r['target']:<6} {dg:>6} {ddg:>7} "
+        print(f"  {i:>2}  {r['target']:<6} {r.get('prodigy_dg',''):>6} "
               f"{r.get('interaction_pae',''):>5} {r.get('target_aligned_antibody_rmsd',''):>5} "
               f"{r.get('framework_aligned_H3_rmsd',''):>5}  {r.get('tag','')}")
 
