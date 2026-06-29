@@ -6,7 +6,7 @@ NAME="Esp"
 TARGET="inputs/AF_Esp.pdb"
 HOTSPOTS="A69,A71,A74"   # spot #1   (backups: #2 A40,A42,A63   #3 A156,A157,A160)
 
-: "${NUM_DESIGNS:=1000}"   # full run; override for a quick test: NUM_DESIGNS=20 bash run_esp.sh
+: "${NUM_DESIGNS:=2000}"   # full run; override for a quick test: NUM_DESIGNS=20 bash run_esp.sh
 : "${SEQS_PER_STRUCT:=4}"  # 4 seqs per backbone → 4000 RF2 runs per target
 
 # Other knobs (NUM_DESIGNS, cutoffs, weights, CLEAN, ...) default in _pipeline.sh;
