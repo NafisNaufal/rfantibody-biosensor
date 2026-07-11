@@ -72,13 +72,18 @@ echo "================ $NAME  @ $(date '+%Y-%m-%d %H:%M:%S') ================"
 echo "target=$TARGET  hotspots=$HOTSPOTS  loops=$LOOPS  n=$NUM_DESIGNS  chunk=$CHUNK_SIZE"
 
 # ---- step 1: RFdiffusion (chunked) -----------------------------------------
-if [ -f "$OUTDIR/.step1.done" ]; then
+# NOTE: gated by per-chunk count, NOT a single .step1.done flag -- if NUM_DESIGNS
+# grows between runs, a stale whole-step flag would silently skip generating the
+# extra backbones forever. Always recompute how many chunks are *currently*
+# required and only skip the ones already done.
+N_CHUNKS=$(( (NUM_DESIGNS + CHUNK_SIZE - 1) / CHUNK_SIZE ))
+LAST_SIZE=$(( NUM_DESIGNS - (N_CHUNKS - 1) * CHUNK_SIZE ))
+N_CHUNK_DONE=$(ls "$CHUNKS"/.1_bb_*.done 2>/dev/null | wc -l | tr -d ' ')
+if [ -f "$OUTDIR/.step1.done" ] && [ "$N_CHUNK_DONE" -ge "$N_CHUNKS" ]; then
     _skip 1
 else
     _t "[1/5] RFdiffusion ($NUM_DESIGNS backbones, chunk=$CHUNK_SIZE)"
-    # compute number of chunks
-    N_CHUNKS=$(( (NUM_DESIGNS + CHUNK_SIZE - 1) / CHUNK_SIZE ))
-    LAST_SIZE=$(( NUM_DESIGNS - (N_CHUNKS - 1) * CHUNK_SIZE ))
+    NEW_WORK=0
     for i in $(seq 0 $((N_CHUNKS - 1))); do
         IDX=$(printf '%04d' $i)
         CHUNK_QV="$CHUNKS/1_bb_${IDX}.qv"
@@ -87,6 +92,7 @@ else
             echo "  [chunk $IDX] already done, skipping"
             continue
         fi
+        NEW_WORK=1
         rm -f "$CHUNK_QV"
         # last chunk may be smaller
         THIS_N=$CHUNK_SIZE
@@ -97,23 +103,24 @@ else
             --num-designs "$THIS_N" --design-loops "$LOOPS" --hotspots "$HOTSPOTS"
         touch "$CHUNK_DONE"
     done
-    rm -f "$BB"
-    uv run python scripts/biosensor/merge_quivers.py \
-        "$CHUNKS"/1_bb_*.qv --output "$BB" --overwrite
+    if [ "$NEW_WORK" = "1" ] || [ ! -f "$BB" ]; then
+        rm -f "$BB"
+        uv run python scripts/biosensor/merge_quivers.py \
+            "$CHUNKS"/1_bb_*.qv --output "$BB" --overwrite
+    fi
     _done 1
 fi
 
 # ---- step 2: geometry filter (GPU-free, fast — single pass) ----------------
-if [ -f "$OUTDIR/.step2.done" ]; then
-    _skip 2
-else
-    rm -f "$FILT"
-    _t "[2/5] Geometry filter (drop broken / undocked)"
-    uv run python scripts/biosensor/filter_backbones.py \
-        --input "$BB" --output "$FILT" --report "$OUTDIR/filter_report.csv" \
-        --break-cutoff "$BREAK_CUTOFF" --contact-cutoff "$CONTACT_CUTOFF" --overwrite
-    _done 2
-fi
+# Always re-run: it's cheap (CPU-only) and $BB can grow between runs if
+# NUM_DESIGNS increased, so a stale "done" flag here would silently leave
+# $FILT built from only the old, smaller backbone set.
+_t "[2/5] Geometry filter (drop broken / undocked)"
+rm -f "$FILT"
+uv run python scripts/biosensor/filter_backbones.py \
+    --input "$BB" --output "$FILT" --report "$OUTDIR/filter_report.csv" \
+    --break-cutoff "$BREAK_CUTOFF" --contact-cutoff "$CONTACT_CUTOFF" --overwrite
+_done 2
 
 # stop cleanly if nothing survived
 N_FILT=$(grep -c '^QV_TAG' "$FILT" 2>/dev/null || true); N_FILT=${N_FILT:-0}
@@ -124,16 +131,25 @@ if [ "$N_FILT" -eq 0 ]; then
 fi
 
 # ---- step 3: ProteinMPNN (chunked) -----------------------------------------
-if [ -f "$OUTDIR/.step3.done" ]; then
+# Re-split whenever $FILT's count changed (NUM_DESIGNS growth => more survivors
+# than last time) instead of trusting a one-shot ".3_split.done" flag. Since
+# $FILT is append-only across re-runs (step 2 preserves input order), existing
+# chunk files stay byte-identical after a re-split, so their GPU .done markers
+# below remain valid -- only the new trailing chunks actually get (re)computed.
+N_FILT_NOW=$(grep -c '^QV_TAG' "$FILT" 2>/dev/null || true); N_FILT_NOW=${N_FILT_NOW:-0}
+N_FILT_SPLIT=$(cat "$CHUNKS/.3_split.count" 2>/dev/null || echo -1)
+N_CHUNK3_DONE=$(ls "$CHUNKS"/.3_*.done 2>/dev/null | grep -v split | wc -l | tr -d ' ')
+N_CHUNK3_NEEDED=$(( (N_FILT_NOW + CHUNK_SIZE - 1) / CHUNK_SIZE ))
+if [ -f "$OUTDIR/.step3.done" ] && [ "$N_FILT_NOW" = "$N_FILT_SPLIT" ] && [ "$N_CHUNK3_DONE" -ge "$N_CHUNK3_NEEDED" ]; then
     _skip 3
 else
     _t "[3/5] ProteinMPNN ($SEQS_PER_STRUCT seqs/backbone, chunk=$CHUNK_SIZE)"
-    # split filtered quiver into input chunks; sentinel guards against partial splits
-    if [ ! -f "$CHUNKS/.3_split.done" ]; then
+    if [ "$N_FILT_NOW" != "$N_FILT_SPLIT" ]; then
         rm -f "$CHUNKS"/3_in_*.qv
         _split_quiver "$FILT" "$CHUNKS/3_in_" "$CHUNK_SIZE" > /dev/null
-        touch "$CHUNKS/.3_split.done"
+        echo "$N_FILT_NOW" > "$CHUNKS/.3_split.count"
     fi
+    NEW_WORK=0
     for CHUNK_IN in "$CHUNKS"/3_in_*.qv; do
         IDX="${CHUNK_IN##*/3_in_}"; IDX="${IDX%.qv}"
         CHUNK_OUT="$CHUNKS/3_out_${IDX}.qv"
@@ -142,6 +158,7 @@ else
             echo "  [chunk $IDX] already done, skipping"
             continue
         fi
+        NEW_WORK=1
         rm -f "$CHUNK_OUT"
         echo "  [chunk $IDX] running ProteinMPNN..."
         uv run proteinmpnn \
@@ -151,22 +168,30 @@ else
         [ -s "$CHUNK_OUT" ] || { echo "ERROR: ProteinMPNN chunk $IDX produced empty output"; exit 1; }
         touch "$CHUNK_DONE"
     done
-    rm -f "$MPNN"
-    uv run python scripts/biosensor/merge_quivers.py \
-        "$CHUNKS"/3_out_*.qv --output "$MPNN" --overwrite
+    if [ "$NEW_WORK" = "1" ] || [ ! -f "$MPNN" ]; then
+        rm -f "$MPNN"
+        uv run python scripts/biosensor/merge_quivers.py \
+            "$CHUNKS"/3_out_*.qv --output "$MPNN" --overwrite
+    fi
     _done 3
 fi
 
 # ---- step 4: RF2 (chunked) -------------------------------------------------
-if [ -f "$OUTDIR/.step4.done" ]; then
+# Same growth-aware gating as step 3 (see comment above).
+N_MPNN_NOW=$(grep -c '^QV_TAG' "$MPNN" 2>/dev/null || true); N_MPNN_NOW=${N_MPNN_NOW:-0}
+N_MPNN_SPLIT=$(cat "$CHUNKS/.4_split.count" 2>/dev/null || echo -1)
+N_CHUNK4_DONE=$(ls "$CHUNKS"/.4_*.done 2>/dev/null | grep -v split | wc -l | tr -d ' ')
+N_CHUNK4_NEEDED=$(( (N_MPNN_NOW + CHUNK_SIZE - 1) / CHUNK_SIZE ))
+if [ -f "$OUTDIR/.step4.done" ] && [ "$N_MPNN_NOW" = "$N_MPNN_SPLIT" ] && [ "$N_CHUNK4_DONE" -ge "$N_CHUNK4_NEEDED" ]; then
     _skip 4
 else
     _t "[4/5] RF2 ($RF2_RECYCLES recycles, chunk=$CHUNK_SIZE)"
-    if [ ! -f "$CHUNKS/.4_split.done" ]; then
+    if [ "$N_MPNN_NOW" != "$N_MPNN_SPLIT" ]; then
         rm -f "$CHUNKS"/4_in_*.qv
         _split_quiver "$MPNN" "$CHUNKS/4_in_" "$CHUNK_SIZE" > /dev/null
-        touch "$CHUNKS/.4_split.done"
+        echo "$N_MPNN_NOW" > "$CHUNKS/.4_split.count"
     fi
+    NEW_WORK=0
     for CHUNK_IN in "$CHUNKS"/4_in_*.qv; do
         IDX="${CHUNK_IN##*/4_in_}"; IDX="${IDX%.qv}"
         CHUNK_OUT="$CHUNKS/4_out_${IDX}.qv"
@@ -175,6 +200,7 @@ else
             echo "  [chunk $IDX] already done, skipping"
             continue
         fi
+        NEW_WORK=1
         rm -f "$CHUNK_OUT"
         echo "  [chunk $IDX] running RF2..."
         uv run rf2 \
@@ -183,24 +209,25 @@ else
         [ -s "$CHUNK_OUT" ] || { echo "ERROR: RF2 chunk $IDX produced empty output"; exit 1; }
         touch "$CHUNK_DONE"
     done
-    rm -f "$RF2"
-    uv run python scripts/biosensor/merge_quivers.py \
-        "$CHUNKS"/4_out_*.qv --output "$RF2" --overwrite
+    if [ "$NEW_WORK" = "1" ] || [ ! -f "$RF2" ]; then
+        rm -f "$RF2"
+        uv run python scripts/biosensor/merge_quivers.py \
+            "$CHUNKS"/4_out_*.qv --output "$RF2" --overwrite
+    fi
     _done 4
 fi
 
 # ---- step 5: select + rank (GPU-free) --------------------------------------
-if [ -f "$OUTDIR/.step5.done" ]; then
-    _skip 5
-else
-    _t "[5/5] Select + rank (pAE<$PAE_CUTOFF, RMSD<$RMSD_CUTOFF, lDDT>=$LDDT_CUTOFF, dG<$DG_CUTOFF)"
-    uv run python scripts/biosensor/select_designs.py \
-        --input "$RF2" --outdir "$OUTDIR" \
-        --pae-cutoff "$PAE_CUTOFF" --rmsd-cutoff "$RMSD_CUTOFF" \
-        --lddt-cutoff "$LDDT_CUTOFF" --dg-cutoff "$DG_CUTOFF" \
-        --top "$TOP_N"
-    _done 5
-fi
+# Always re-run: $RF2 can grow between runs (NUM_DESIGNS increases), and a
+# stale "done" flag here would silently leave 5_selection.csv/winners built
+# from only the old, smaller RF2 output.
+_t "[5/5] Select + rank (pAE<$PAE_CUTOFF, RMSD<$RMSD_CUTOFF, lDDT>=$LDDT_CUTOFF, dG<$DG_CUTOFF)"
+uv run python scripts/biosensor/select_designs.py \
+    --input "$RF2" --outdir "$OUTDIR" \
+    --pae-cutoff "$PAE_CUTOFF" --rmsd-cutoff "$RMSD_CUTOFF" \
+    --lddt-cutoff "$LDDT_CUTOFF" --dg-cutoff "$DG_CUTOFF" \
+    --top "$TOP_N"
+_done 5
 
 echo ""
 echo "DONE ($NAME) in $((SECONDS))s total."
