@@ -56,6 +56,14 @@ while true; do
             echo "WARNING: batch $BATCH_NAME failed with exit code $rc; continuing."
         fi
 
+        # trajectory files are multi-GB and never needed past this point
+        find "designs/$BATCH_NAME" -name '*_traj.qv' -delete 2>/dev/null || true
+
+        # fold this batch into the running, globally-reclustered leaderboard
+        uv run python scripts/biosensor/aggregate_batches.py \
+            --target "$TARGET_NAME" --spot "$SPOT_NAME" || \
+            echo "WARNING: aggregation failed for $BATCH_NAME; will retry next batch."
+
         if [ "$SLEEP_SECONDS" -gt 0 ]; then
             sleep "$SLEEP_SECONDS"
         fi

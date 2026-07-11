@@ -22,6 +22,7 @@ External scorers run in isolated envs so they can't perturb the GPU stack:
   PRODIGY:  uv run --no-project --with prodigy-prot prodigy <pdb> --selection H T
 """
 import argparse
+import csv
 import os
 import re
 import shlex
@@ -112,12 +113,9 @@ def _run_energy(pdb_lines, cmd, pattern, selection=None, temp=None):
 
 
 def run_prodigy(pdb_lines, cmd, chains, temp):
-    dg, note = _run_energy(pdb_lines, cmd,
-                           r"Predicted binding affinity \(kcal\.mol-1\):\s*(-?\d+\.?\d*)",
-                           selection=chains, temp=temp)
-    kd = float("nan")
-    return dg, kd, note
-
+    return _run_energy(pdb_lines, cmd,
+                       r"Predicted binding affinity \(kcal\.mol-1\):\s*(-?\d+\.?\d*)",
+                       selection=chains, temp=temp)
 
 
 def cdr_sequence(pdb_lines):
@@ -192,7 +190,18 @@ def main():
                     help="how to invoke prodigy (isolated env)")
     ap.add_argument("--skip-prodigy", action="store_true",
                     help="skip PRODIGY: keep pAE+RMSD filters, drop dG from filter & ranking")
+    ap.add_argument("--prodigy-cache", default=None,
+                    help="tag->dG cache CSV: reuse scores already computed for a tag instead of "
+                         "re-running PRODIGY, and persist newly-scored tags back. Use this for "
+                         "incremental re-aggregation over a growing, ever-larger design pool so "
+                         "each re-run only scores what's actually new.")
     args = ap.parse_args()
+
+    prodigy_cache = {}
+    if args.prodigy_cache and os.path.exists(args.prodigy_cache):
+        with open(args.prodigy_cache) as f:
+            for row in csv.DictReader(f):
+                prodigy_cache[row["tag"]] = (float(row["prodigy_dg"]), row["prodigy_note"])
 
     from rfantibody.util.quiver import Quiver  # lazy: keeps parsing logic importable without GPU env
 
@@ -220,7 +229,7 @@ def main():
         n_rmsd += int(pass_pae and pass_rmsd)
         n_lddt += int(pass_pae and pass_rmsd and pass_lddt)
 
-        dg = kd = float("nan")
+        dg = float("nan")
         note = "skipped"
         cdrseq = ""
         # Only spend external scorers on designs that already cleared pAE + RMSD + lDDT.
@@ -228,7 +237,11 @@ def main():
             lines = qin.get_pdblines(tag)
             cdrseq = cdr_sequence(lines)
             if not args.skip_prodigy:
-                dg, kd, note = run_prodigy(lines, prodigy_cmd, chains, args.prodigy_temp)
+                if tag in prodigy_cache:
+                    dg, note = prodigy_cache[tag]
+                else:
+                    dg, note = run_prodigy(lines, prodigy_cmd, chains, args.prodigy_temp)
+                    prodigy_cache[tag] = (dg, note)
 
         pass_dg = True if args.skip_prodigy else (dg < args.dg_cutoff)
         pass_all = pass_pae and pass_rmsd and pass_lddt and pass_dg
@@ -239,11 +252,18 @@ def main():
                          target_aligned_cdr_rmsd=rcdr,
                          framework_aligned_H3_rmsd=h3,
                          pred_lddt=lddt,
-                         prodigy_dg=dg, prodigy_kd=kd,
+                         prodigy_dg=dg,
                          prodigy_note=note, cdr_seq=cdrseq,
                          pass_pae=pass_pae, pass_rmsd=pass_rmsd,
                          pass_lddt=pass_lddt, pass_dg=pass_dg, pass_all=pass_all,
                          cluster="", cluster_rep=False))
+
+    if args.prodigy_cache:
+        with open(args.prodigy_cache, "w") as f:
+            w = csv.writer(f)
+            w.writerow(["tag", "prodigy_dg", "prodigy_note"])
+            for t, (dg, note) in prodigy_cache.items():
+                w.writerow([t, dg, note])
 
     # ---- composite ranking over survivors (drop metrics with no finite values) ----
     survivors = [r for r in rows if r["pass_all"]]
@@ -267,7 +287,7 @@ def main():
     # ---- write ranked CSV (all designs) ----
     csv_path = os.path.join(args.outdir, "5_selection.csv")
     cols = ["rank", "tag", "cluster", "cluster_rep", "pass_all", "composite",
-            "prodigy_dg", "prodigy_kd", "interaction_pae", "pred_lddt",
+            "prodigy_dg", "interaction_pae", "pred_lddt",
             "target_aligned_antibody_rmsd", "target_aligned_cdr_rmsd",
             "framework_aligned_H3_rmsd", "cdr_seq",
             "pass_pae", "pass_rmsd", "pass_lddt", "pass_dg", "prodigy_note"]
