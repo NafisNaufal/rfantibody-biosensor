@@ -19,6 +19,29 @@ HOTSPOT_VALUES=(
 : "${SEQS_PER_STRUCT:=4}"
 : "${SLEEP_SECONDS:=0}"
 
+# A batch is only "finished" once it either completed selection or the
+# geometry filter reported zero survivors (both are terminal outcomes with
+# nothing left to compute). Anything else -- no run.log yet, or a run.log
+# that stops short of those markers -- means it was cut off mid-step (e.g.
+# server died) and should be resumed by name, not abandoned for a fresh one.
+is_batch_finished() {
+    local log="designs/$1/run.log"
+    [ -f "$log" ] && grep -qE "^DONE \($1\)|^WARNING: 0 backbones passed for $1" "$log"
+}
+
+find_resumable_batch() {
+    local target="$1" spot="$2" d name
+    for d in designs/${target}_${spot}_batch_*/; do
+        [ -d "$d" ] || continue
+        name="$(basename "${d%/}")"
+        if ! is_batch_finished "$name"; then
+            echo "$name"
+            return 0
+        fi
+    done
+    return 1
+}
+
 ROUND=1
 while true; do
     ROUND_ID="$(printf '%06d' "$ROUND")"
@@ -26,12 +49,23 @@ while true; do
     for i in "${!HOTSPOT_NAMES[@]}"; do
         SPOT_NAME="${HOTSPOT_NAMES[$i]}"
         SPOT_HOTSPOTS="${HOTSPOT_VALUES[$i]}"
-        STAMP="$(date '+%Y%m%d_%H%M%S')"
-        BATCH_NAME="${TARGET_NAME}_${SPOT_NAME}_batch_${ROUND_ID}_${STAMP}"
+
+        RESUMING=0
+        if RESUME_NAME="$(find_resumable_batch "$TARGET_NAME" "$SPOT_NAME")"; then
+            BATCH_NAME="$RESUME_NAME"
+            RESUMING=1
+        else
+            STAMP="$(date '+%Y%m%d_%H%M%S')"
+            BATCH_NAME="${TARGET_NAME}_${SPOT_NAME}_batch_${ROUND_ID}_${STAMP}"
+        fi
 
         echo ""
         echo "============================================================"
-        echo "Starting $BATCH_NAME ($BATCH_SIZE designs; hotspots=$SPOT_HOTSPOTS)"
+        if [ "$RESUMING" = "1" ]; then
+            echo "Resuming $BATCH_NAME (interrupted last time, e.g. by a server restart)"
+        else
+            echo "Starting $BATCH_NAME ($BATCH_SIZE designs; hotspots=$SPOT_HOTSPOTS)"
+        fi
         echo "============================================================"
 
         if (
