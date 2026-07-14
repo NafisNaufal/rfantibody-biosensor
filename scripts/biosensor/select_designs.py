@@ -195,6 +195,9 @@ def main():
                          "re-running PRODIGY, and persist newly-scored tags back. Use this for "
                          "incremental re-aggregation over a growing, ever-larger design pool so "
                          "each re-run only scores what's actually new.")
+    ap.add_argument("--equal-weights", action="store_true",
+                    help="ignore the favoured WEIGHTS and weight all composite metrics equally "
+                         "(sensitivity check: does the ranking actually depend on the weighting?)")
     args = ap.parse_args()
 
     prodigy_cache = {}
@@ -268,7 +271,8 @@ def main():
     # ---- composite ranking over survivors (drop metrics with no finite values) ----
     survivors = [r for r in rows if r["pass_all"]]
     finite = lambda v: v == v  # noqa: E731  (False for NaN)
-    weights = {k: w for k, w in WEIGHTS.items()
+    base_weights = {k: 1.0 for k in WEIGHTS} if args.equal_weights else WEIGHTS
+    weights = {k: w for k, w in base_weights.items()
                if any(finite(r.get(k, float("nan"))) for r in survivors)}
     if survivors and weights:
         norms = {}
