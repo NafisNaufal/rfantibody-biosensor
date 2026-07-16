@@ -105,8 +105,13 @@ else
     done
     if [ "$NEW_WORK" = "1" ] || [ ! -f "$BB" ]; then
         rm -f "$BB"
+        # NOTE: glob must match ONLY the real chunk files (1_bb_0000.qv, ...),
+        # NOT rfdiffusion's own trajectory companions written into the same
+        # dir (1_bb_0000_pX0_traj.qv, 1_bb_0000_Xt-1_traj.qv) -- those are
+        # noisy, partially-denoised intermediate states, not real backbones,
+        # and a looser glob would silently merge them in as if they were.
         uv run python scripts/biosensor/merge_quivers.py \
-            "$CHUNKS"/1_bb_*.qv --output "$BB" --overwrite
+            "$CHUNKS"/1_bb_[0-9][0-9][0-9][0-9].qv --output "$BB" --overwrite
     fi
     _done 1
 fi
