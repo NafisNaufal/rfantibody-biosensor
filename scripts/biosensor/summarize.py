@@ -35,7 +35,14 @@ def main():
     args = ap.parse_args()
 
     out = args.out or os.path.join(args.designs_dir, "SUMMARY.csv")
-    csvs = sorted(glob.glob(os.path.join(args.designs_dir, "*", "5_selection.csv")))
+    # Exclude raw per-batch dirs (designs/<Target>_<spot>_batch_.../5_selection.csv):
+    # every batch's results are already folded into its <Target>_<spot>_master/
+    # pool with correct global re-clustering, so counting both double-counts
+    # the same designs and miscounts each batch as its own "target".
+    csvs = sorted(
+        p for p in glob.glob(os.path.join(args.designs_dir, "*", "5_selection.csv"))
+        if "_batch_" not in os.path.basename(os.path.dirname(p))
+    )
     if not csvs:
         print(f"No <Target>/5_selection.csv under {args.designs_dir}/ — run the pipeline first.")
         return
