@@ -64,7 +64,13 @@ def completed(batch_dir, name):
 
 
 def has_banked_work(batch_dir):
-    """Any non-empty stage output, or any completed chunk, means keep."""
+    """True only if actual data exists -- never on the say-so of a .done marker.
+
+    A ".done" marker alone proves nothing. Before step 1 gained an output
+    guard, a generator that exited 0 without writing anything still got its
+    chunk marked complete, so a batch whose RFdiffusion was killed by OOM can
+    carry ".1_bb_0000.done" with no quiver behind it. Require bytes on disk.
+    """
     for stage in ("1_backbones.qv", "2_filtered.qv", "3_mpnn.qv", "4_rf2.qv"):
         p = os.path.join(batch_dir, stage)
         if os.path.isfile(p) and os.path.getsize(p) > 0:
@@ -72,8 +78,10 @@ def has_banked_work(batch_dir):
     chunks = os.path.join(batch_dir, "chunks")
     if os.path.isdir(chunks):
         for entry in os.listdir(chunks):
-            if entry.endswith(".done"):
-                return True
+            if entry.endswith(".qv"):
+                p = os.path.join(chunks, entry)
+                if os.path.isfile(p) and os.path.getsize(p) > 0:
+                    return True
     return False
 
 

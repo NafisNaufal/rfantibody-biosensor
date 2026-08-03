@@ -98,9 +98,19 @@ else
         THIS_N=$CHUNK_SIZE
         if [ $i -eq $((N_CHUNKS - 1)) ]; then THIS_N=$LAST_SIZE; fi
         echo "  [chunk $IDX] generating $THIS_N backbones..."
-        uv run rfdiffusion \
+        # Guard on the OUTPUT, not just the exit status: a generator can exit 0
+        # having written nothing (worker killed by GPU OOM, partial/failed
+        # write). `set -e` cannot catch that, and the bare `touch` below would
+        # then mark the chunk complete with no data behind it -- permanently
+        # poisoning the batch, because every later resume sees "chunk done",
+        # skips generation, merges nothing, and exits clean at step 2. Steps 3
+        # and 4 have carried this guard for a while; step 1 had not.
+        if ! uv run rfdiffusion \
             --target "$TARGET" --framework "$FRAMEWORK" --output-quiver "$CHUNK_QV" \
-            --num-designs "$THIS_N" --design-loops "$LOOPS" --hotspots "$HOTSPOTS"
+            --num-designs "$THIS_N" --design-loops "$LOOPS" --hotspots "$HOTSPOTS"; then
+            echo "ERROR: RFdiffusion failed on chunk $IDX (GPU OOM? see above)"; exit 1
+        fi
+        [ -s "$CHUNK_QV" ] || { echo "ERROR: RFdiffusion chunk $IDX wrote no backbones"; exit 1; }
         touch "$CHUNK_DONE"
     done
     if [ "$NEW_WORK" = "1" ] || [ ! -f "$BB" ]; then
@@ -113,6 +123,9 @@ else
         uv run python scripts/biosensor/merge_quivers.py \
             "$CHUNKS"/1_bb_[0-9][0-9][0-9][0-9].qv --output "$BB" --overwrite
     fi
+    # Never record step 1 as complete on an empty merge -- .step1.done would
+    # make every later resume skip generation and exit clean at step 2.
+    [ -s "$BB" ] || { echo "ERROR: step 1 produced no backbones; not marking it done"; exit 1; }
     _done 1
 fi
 
