@@ -7,13 +7,20 @@ cause), the loop runners keep minting fresh timestamped batch directories --
 thousands of empty shells that hold no recoverable work.
 
 A batch is classified DEAD only when ALL of these are true:
-  * run.log has no terminal marker ("DONE (<name>)" or the zero-survivor
-    early exit) -- i.e. it never legitimately finished;
+  * it did not complete ("DONE (<name>)" absent from run.log);
   * every stage output (1_backbones / 2_filtered / 3_mpnn / 4_rf2 .qv) is
     missing or zero-length;
   * no per-chunk .done marker exists (so no banked GPU work to resume);
   * it has not been touched recently (guards against deleting a batch that
     is running right now).
+
+Note on the zero-survivor early exit: "WARNING: 0 backbones passed" is a
+terminal state, but on its own it does NOT mean the batch is worth keeping.
+It has two very different causes -- RFdiffusion produced backbones and the
+geometry filter rejected them all (real data, keep), or RFdiffusion produced
+nothing at all because it crashed (empty shell, delete). The two are told
+apart by whether 1_backbones.qv actually holds anything, which is why the
+banked-work check runs before any marker check: data always wins.
 
 Anything failing those tests is KEPT. Dry-run by default -- nothing is
 deleted unless --delete is passed.
@@ -40,16 +47,16 @@ def dir_size(path):
     return total
 
 
-def has_terminal_marker(batch_dir, name):
+def completed(batch_dir, name):
+    """True only for a real end-to-end completion, not the zero-survivor exit."""
     log = os.path.join(batch_dir, "run.log")
     if not os.path.isfile(log):
         return False
     done = f"DONE ({name})"
-    zero = f"WARNING: 0 backbones passed for {name}"
     try:
         with open(log, errors="ignore") as f:
             for line in f:
-                if line.startswith(done) or line.startswith(zero):
+                if line.startswith(done):
                     return True
     except OSError:
         return True  # unreadable -> treat as keep, never delete on uncertainty
@@ -92,28 +99,30 @@ def main():
         return
 
     cutoff = time.time() - args.min_age_minutes * 60
-    dead, kept_terminal, kept_data, kept_recent = [], 0, 0, 0
+    dead, kept_done, kept_data, kept_recent = [], 0, 0, 0
 
     for d in batches:
         name = os.path.basename(d)
         if os.path.getmtime(d) > cutoff:
             kept_recent += 1
             continue
-        if has_terminal_marker(d, name):
-            kept_terminal += 1
-            continue
+        # data check first: a batch holding real output is kept no matter what
+        # its run.log says.
         if has_banked_work(d):
             kept_data += 1
+            continue
+        if completed(d, name):
+            kept_done += 1
             continue
         dead.append(d)
 
     freed = sum(dir_size(d) for d in dead)
     print(f"Scanned {len(batches)} batch directories under {args.designs_dir}/\n")
-    print(f"  KEEP  finished normally      : {kept_terminal}")
     print(f"  KEEP  hold recoverable work  : {kept_data}")
+    print(f"  KEEP  completed, no output   : {kept_done}")
     print(f"  KEEP  modified <{args.min_age_minutes}min ago     : {kept_recent}"
           f"   (possibly running now)")
-    print(f"  DEAD  no work, no completion : {len(dead)}"
+    print(f"  DEAD  produced nothing       : {len(dead)}"
           f"   ({freed / 1e9:.2f} GB)")
 
     if args.list_out and dead:
