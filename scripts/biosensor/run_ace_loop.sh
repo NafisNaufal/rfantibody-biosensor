@@ -19,6 +19,21 @@ HOTSPOT_VALUES=(
 : "${SEQS_PER_STRUCT:=4}"
 : "${SLEEP_SECONDS:=0}"
 
+# Which hotspot sets to cycle, space-separated. Default: all of them. Override
+# to pour all compute into one epitope, e.g.
+#   SPOTS=spot1 bash scripts/biosensor/run_ace_loop.sh
+: "${SPOTS:=${HOTSPOT_NAMES[*]}}"
+
+# Fail fast on a typo: an unmatched name would leave the `while true` below
+# spinning forever with no work to do.
+for _s in $SPOTS; do
+    case " ${HOTSPOT_NAMES[*]} " in
+        *" $_s "*) ;;
+        *) echo "ERROR: unknown spot '$_s' (known: ${HOTSPOT_NAMES[*]})" >&2; exit 1 ;;
+    esac
+done
+echo "Cycling hotspot set(s): $SPOTS"
+
 # A batch is only "finished" once it either completed selection or the
 # geometry filter reported zero survivors (both are terminal outcomes with
 # nothing left to compute). Anything else -- no run.log yet, or a run.log
@@ -49,6 +64,9 @@ while true; do
     for i in "${!HOTSPOT_NAMES[@]}"; do
         SPOT_NAME="${HOTSPOT_NAMES[$i]}"
         SPOT_HOTSPOTS="${HOTSPOT_VALUES[$i]}"
+
+        # skip hotspot sets not selected via $SPOTS
+        case " $SPOTS " in *" $SPOT_NAME "*) ;; *) continue ;; esac
 
         RESUMING=0
         if RESUME_NAME="$(find_resumable_batch "$TARGET_NAME" "$SPOT_NAME")"; then
