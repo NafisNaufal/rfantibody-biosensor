@@ -58,6 +58,7 @@ find_resumable_batch() {
 }
 
 ROUND=1
+FAILS=0     # consecutive failures, drives the backoff below
 while true; do
     ROUND_ID="$(printf '%06d' "$ROUND")"
 
@@ -99,13 +100,27 @@ while true; do
             source "$PIPELINE_DIR/_pipeline.sh"
         ); then
             echo "Batch $BATCH_NAME finished."
+            FAILS=0
         else
             rc=$?
             if [ "$rc" -eq 130 ] || [ "$rc" -eq 143 ]; then
                 echo "Stopped."
                 exit "$rc"
             fi
-            echo "WARNING: batch $BATCH_NAME failed with exit code $rc; continuing."
+            # A failed batch keeps no terminal marker, so it is picked up again
+            # next round. Without a backoff that becomes a hot spin loop when
+            # the cause is persistent (wrong working directory, missing env,
+            # GPU OOM) -- which is exactly how ~13 days were burned unnoticed.
+            FAILS=$((FAILS + 1))
+            if [ "$FAILS" -ge 6 ]; then BACKOFF=900; else BACKOFF=$((30 << (FAILS - 1))); fi
+            echo "WARNING: batch $BATCH_NAME failed with exit code $rc (consecutive failures: $FAILS)."
+            if [ "$FAILS" -ge 3 ]; then
+                echo "  >> $FAILS batches have failed in a row. This is very likely systematic"
+                echo "  >> (wrong working directory, missing uv env, or GPU OOM) rather than"
+                echo "  >> bad luck. Read the error above instead of leaving this running."
+            fi
+            echo "  backing off ${BACKOFF}s before the next attempt."
+            sleep "$BACKOFF"
         fi
 
         # trajectory files are multi-GB and never needed past this point
