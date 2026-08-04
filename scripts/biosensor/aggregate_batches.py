@@ -41,6 +41,38 @@ def iter_blocks(path):
         yield current
 
 
+def _retag(line, prefix):
+    """'KEYWORD tag[ rest]' -> 'KEYWORD <prefix>tag[ rest]'."""
+    parts = line.rstrip("\n").split(" ", 2)
+    parts[1] = prefix + parts[1]
+    return " ".join(parts) + "\n"
+
+
+def namespaced_blocks(path, prefix):
+    """Yield blocks with their QV_TAG/QV_SCORE tags prefixed.
+
+    RFdiffusion restarts design numbering at zero in every batch, so a tag
+    like 'samples_design_0_dldesign_0_best' recurs in all of them. Without a
+    per-batch prefix these collide, and a dedup-by-tag merge silently drops
+    every design of every batch after the first.
+    """
+    for block in iter_blocks(path):
+        yield [_retag(l, prefix) if l.startswith(("QV_TAG ", "QV_SCORE "))
+               else l for l in block]
+
+
+def batch_prefix(batch_name):
+    """'Ace_spot1_batch_000005_20260803_223035' -> '000005_20260803_223035__'.
+
+    Round number alone is not enough: the loop runner resets ROUND to 1 on
+    every relaunch, so the timestamp is what makes this unique.
+    """
+    marker = "_batch_"
+    i = batch_name.find(marker)
+    tail = batch_name[i + len(marker):] if i >= 0 else batch_name
+    return tail + "__"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -53,6 +85,11 @@ def main():
     ap.add_argument("--lddt-cutoff", type=float, default=0.9)
     ap.add_argument("--top", type=int, default=10)
     ap.add_argument("--cluster-identity", type=float, default=0.90)
+    ap.add_argument("--rebuild", action="store_true",
+                    help="discard the accumulated pool and ledger and re-fold every "
+                         "batch on disk. Needed once after the tag-namespacing fix, "
+                         "since pools built before it dropped all but the first batch. "
+                         "Costs no GPU time -- the per-batch 4_rf2.qv files are reused.")
     args = ap.parse_args()
 
     def has_results(d):
@@ -75,6 +112,13 @@ def main():
     ledger_path = os.path.join(master_dir, ".folded_batches.txt")
     cache_path = os.path.join(master_dir, "prodigy_cache.csv")
 
+    if args.rebuild:
+        for p in (master_qv, ledger_path):
+            if os.path.exists(p):
+                os.remove(p)
+        print(f"{args.target}/{args.spot}: rebuilding pool from all "
+              f"{len(batch_dirs)} batch(es) on disk...")
+
     folded = set()
     if os.path.exists(ledger_path):
         with open(ledger_path) as f:
@@ -85,23 +129,28 @@ def main():
         print(f"{args.target}/{args.spot}: {len(batch_dirs)} batch(es) total, "
               f"none new since last aggregation -- re-ranking existing pool only.")
     else:
-        print(f"{args.target}/{args.spot}: folding in {len(new_dirs)} new "
-              f"batch(es) ({len(batch_dirs)} total so far)...")
+        if not args.rebuild:
+            print(f"{args.target}/{args.spot}: folding in {len(new_dirs)} new "
+                  f"batch(es) ({len(batch_dirs)} total so far)...")
         seen_tags = set()
         if os.path.exists(master_qv):
             for block in iter_blocks(master_qv):
                 seen_tags.add(block[0].split()[1])
+        added_total = 0
         with open(master_qv, "a") as out:
             for d in new_dirs:
                 n = 0
-                for block in iter_blocks(os.path.join(d, "4_rf2.qv")):
+                pfx = batch_prefix(os.path.basename(d))
+                for block in namespaced_blocks(os.path.join(d, "4_rf2.qv"), pfx):
                     tag = block[0].split()[1]
                     if tag in seen_tags:
                         continue
                     seen_tags.add(tag)
                     out.writelines(block)
                     n += 1
+                added_total += n
                 print(f"  + {os.path.basename(d)}: {n} designs")
+        print(f"  pool now holds {len(seen_tags)} designs (+{added_total})")
         with open(ledger_path, "a") as f:
             for d in new_dirs:
                 f.write(os.path.basename(d) + "\n")
