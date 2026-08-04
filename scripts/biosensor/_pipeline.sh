@@ -78,7 +78,10 @@ echo "target=$TARGET  hotspots=$HOTSPOTS  loops=$LOOPS  n=$NUM_DESIGNS  chunk=$C
 # required and only skip the ones already done.
 N_CHUNKS=$(( (NUM_DESIGNS + CHUNK_SIZE - 1) / CHUNK_SIZE ))
 LAST_SIZE=$(( NUM_DESIGNS - (N_CHUNKS - 1) * CHUNK_SIZE ))
-N_CHUNK_DONE=$(ls "$CHUNKS"/.1_bb_*.done 2>/dev/null | wc -l | tr -d ' ')
+# NB: use find, not `ls ... | wc -l`. Under `set -euo pipefail` a glob that
+# matches nothing makes ls exit non-zero, pipefail propagates it, and errexit
+# kills the run -- which is every *fresh* batch, before RFdiffusion even starts.
+N_CHUNK_DONE=$(find "$CHUNKS" -maxdepth 1 -name '.1_bb_*.done' 2>/dev/null | wc -l)
 if [ -f "$OUTDIR/.step1.done" ] && [ "$N_CHUNK_DONE" -ge "$N_CHUNKS" ]; then
     _skip 1
 else
@@ -156,7 +159,7 @@ fi
 # below remain valid -- only the new trailing chunks actually get (re)computed.
 N_FILT_NOW=$(grep -c '^QV_TAG' "$FILT" 2>/dev/null || true); N_FILT_NOW=${N_FILT_NOW:-0}
 N_FILT_SPLIT=$(cat "$CHUNKS/.3_split.count" 2>/dev/null || echo -1)
-N_CHUNK3_DONE=$(ls "$CHUNKS"/.3_*.done 2>/dev/null | grep -v split | wc -l | tr -d ' ')
+N_CHUNK3_DONE=$(find "$CHUNKS" -maxdepth 1 -name '.3_*.done' 2>/dev/null | wc -l)
 N_CHUNK3_NEEDED=$(( (N_FILT_NOW + CHUNK_SIZE - 1) / CHUNK_SIZE ))
 if [ -f "$OUTDIR/.step3.done" ] && [ "$N_FILT_NOW" = "$N_FILT_SPLIT" ] && [ "$N_CHUNK3_DONE" -ge "$N_CHUNK3_NEEDED" ]; then
     _skip 3
@@ -198,7 +201,7 @@ fi
 # Same growth-aware gating as step 3 (see comment above).
 N_MPNN_NOW=$(grep -c '^QV_TAG' "$MPNN" 2>/dev/null || true); N_MPNN_NOW=${N_MPNN_NOW:-0}
 N_MPNN_SPLIT=$(cat "$CHUNKS/.4_split.count" 2>/dev/null || echo -1)
-N_CHUNK4_DONE=$(ls "$CHUNKS"/.4_*.done 2>/dev/null | grep -v split | wc -l | tr -d ' ')
+N_CHUNK4_DONE=$(find "$CHUNKS" -maxdepth 1 -name '.4_*.done' 2>/dev/null | wc -l)
 N_CHUNK4_NEEDED=$(( (N_MPNN_NOW + CHUNK_SIZE - 1) / CHUNK_SIZE ))
 if [ -f "$OUTDIR/.step4.done" ] && [ "$N_MPNN_NOW" = "$N_MPNN_SPLIT" ] && [ "$N_CHUNK4_DONE" -ge "$N_CHUNK4_NEEDED" ]; then
     _skip 4
