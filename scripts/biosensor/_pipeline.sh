@@ -114,6 +114,11 @@ else
             echo "ERROR: RFdiffusion failed on chunk $IDX (GPU OOM? see above)"; exit 1
         fi
         [ -s "$CHUNK_QV" ] || { echo "ERROR: RFdiffusion chunk $IDX wrote no backbones"; exit 1; }
+        # Drop this chunk's trajectory companions immediately. They are the
+        # intermediate denoising states, are never read downstream, and run
+        # ~0.5 GB per chunk -- enough to fill a disk mid-run. Pruning here
+        # (rather than only in the loop runners) covers every entry point.
+        rm -f "$CHUNKS"/1_bb_${IDX}_*_traj.qv
         touch "$CHUNK_DONE"
     done
     if [ "$NEW_WORK" = "1" ] || [ ! -f "$BB" ]; then
