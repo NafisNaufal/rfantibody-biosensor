@@ -35,6 +35,26 @@ if [ "$CLEAN" = "true" ]; then rm -rf "$OUTDIR"; fi
 mkdir -p "$OUTDIR" "$CHUNKS"
 LOG="$OUTDIR/run.log"
 exec > >(tee -a "$LOG") 2>&1
+COMMAND_LOG="$OUTDIR/commands.log"
+
+# Keep a compact, reproducible record of every external pipeline command.
+# `%q` makes arguments shell-escaped while remaining easy to read/copy.
+_log_command() {
+    local LABEL="$1"
+    shift
+    {
+        printf '%s [%s]' "$(date '+%Y-%m-%d %H:%M:%S')" "$LABEL"
+        printf ' %q' "$@"
+        printf '\n'
+    } >> "$COMMAND_LOG"
+}
+
+_run_logged() {
+    local LABEL="$1"
+    shift
+    _log_command "$LABEL" "$@"
+    "$@"
+}
 
 BB="$OUTDIR/1_backbones.qv"; FILT="$OUTDIR/2_filtered.qv"
 MPNN="$OUTDIR/3_mpnn.qv";    RF2="$OUTDIR/4_rf2.qv"
@@ -46,6 +66,7 @@ _skip() { echo ""; echo "[SKIP] step $1 already complete — delete $OUTDIR/.ste
 # split a quiver file into per-chunk files; outputs chunk paths to stdout
 _split_quiver() {
     local INPUT="$1" PREFIX="$2" CSIZE="$3"
+    _log_command "split-quiver" uv run python - "$INPUT" "$PREFIX" "$CSIZE"
     uv run python - "$INPUT" "$PREFIX" "$CSIZE" <<'PYEOF'
 import sys, os
 input_path, prefix, chunk_size = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -108,7 +129,7 @@ else
         # poisoning the batch, because every later resume sees "chunk done",
         # skips generation, merges nothing, and exits clean at step 2. Steps 3
         # and 4 have carried this guard for a while; step 1 had not.
-        if ! uv run rfdiffusion \
+        if ! _run_logged "rfdiffusion" uv run rfdiffusion \
             --target "$TARGET" --framework "$FRAMEWORK" --output-quiver "$CHUNK_QV" \
             --num-designs "$THIS_N" --design-loops "$LOOPS" --hotspots "$HOTSPOTS"; then
             echo "ERROR: RFdiffusion failed on chunk $IDX (GPU OOM? see above)"; exit 1
@@ -123,7 +144,7 @@ else
         # dir (1_bb_0000_pX0_traj.qv, 1_bb_0000_Xt-1_traj.qv) -- those are
         # noisy, partially-denoised intermediate states, not real backbones,
         # and a looser glob would silently merge them in as if they were.
-        uv run python scripts/biosensor/merge_quivers.py \
+        _run_logged "merge-backbones" uv run python scripts/biosensor/merge_quivers.py \
             "$CHUNKS"/1_bb_[0-9][0-9][0-9][0-9].qv --output "$BB" --overwrite
     fi
     # Never record step 1 as complete on an empty merge -- .step1.done would
@@ -138,7 +159,7 @@ fi
 # $FILT built from only the old, smaller backbone set.
 _t "[2/5] Geometry filter (drop broken / undocked)"
 rm -f "$FILT"
-uv run python scripts/biosensor/filter_backbones.py \
+_run_logged "filter-backbones" uv run python scripts/biosensor/filter_backbones.py \
     --input "$BB" --output "$FILT" --report "$OUTDIR/filter_report.csv" \
     --break-cutoff "$BREAK_CUTOFF" --contact-cutoff "$CONTACT_CUTOFF" --overwrite
 _done 2
@@ -182,7 +203,7 @@ else
         NEW_WORK=1
         rm -f "$CHUNK_OUT"
         echo "  [chunk $IDX] running ProteinMPNN..."
-        uv run proteinmpnn \
+        _run_logged "proteinmpnn" uv run proteinmpnn \
             --input-quiver "$CHUNK_IN" --output-quiver "$CHUNK_OUT" \
             --loops H1,H2,H3 \
             --seqs-per-struct "$SEQS_PER_STRUCT" --temperature "$MPNN_TEMP"
@@ -191,7 +212,7 @@ else
     done
     if [ "$NEW_WORK" = "1" ] || [ ! -f "$MPNN" ]; then
         rm -f "$MPNN"
-        uv run python scripts/biosensor/merge_quivers.py \
+        _run_logged "merge-mpnn" uv run python scripts/biosensor/merge_quivers.py \
             "$CHUNKS"/3_out_*.qv --output "$MPNN" --overwrite
     fi
     _done 3
@@ -224,7 +245,7 @@ else
         NEW_WORK=1
         rm -f "$CHUNK_OUT"
         echo "  [chunk $IDX] running RF2..."
-        uv run rf2 \
+        _run_logged "rf2" uv run rf2 \
             --input-quiver "$CHUNK_IN" --output-quiver "$CHUNK_OUT" \
             --num-recycles "$RF2_RECYCLES" --hotspot-show-prop "$RF2_HOTSPOT_SHOW"
         [ -s "$CHUNK_OUT" ] || { echo "ERROR: RF2 chunk $IDX produced empty output"; exit 1; }
@@ -232,7 +253,7 @@ else
     done
     if [ "$NEW_WORK" = "1" ] || [ ! -f "$RF2" ]; then
         rm -f "$RF2"
-        uv run python scripts/biosensor/merge_quivers.py \
+        _run_logged "merge-rf2" uv run python scripts/biosensor/merge_quivers.py \
             "$CHUNKS"/4_out_*.qv --output "$RF2" --overwrite
     fi
     _done 4
@@ -243,7 +264,7 @@ fi
 # stale "done" flag here would silently leave 5_selection.csv/winners built
 # from only the old, smaller RF2 output.
 _t "[5/5] Select + rank (pAE<$PAE_CUTOFF, RMSD<$RMSD_CUTOFF, lDDT>=$LDDT_CUTOFF, dG<$DG_CUTOFF)"
-uv run python scripts/biosensor/select_designs.py \
+_run_logged "select-designs" uv run python scripts/biosensor/select_designs.py \
     --input "$RF2" --outdir "$OUTDIR" \
     --pae-cutoff "$PAE_CUTOFF" --rmsd-cutoff "$RMSD_CUTOFF" \
     --lddt-cutoff "$LDDT_CUTOFF" --dg-cutoff "$DG_CUTOFF" \
@@ -255,3 +276,4 @@ echo "DONE ($NAME) in $((SECONDS))s total."
 echo "  ranked table : $OUTDIR/5_selection.csv"
 echo "  winners      : $OUTDIR/winners/"
 echo "  log          : $LOG"
+echo "  commands     : $COMMAND_LOG"
