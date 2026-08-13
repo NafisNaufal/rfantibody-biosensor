@@ -35,8 +35,8 @@ WEIGHTS = {
     "prodigy_dg":                   0.40,   # PRODIGY predicted affinity
     "interaction_pae":              0.25,   # interface confidence
     "framework_aligned_H3_rmsd":    0.20,   # H3 loop fidelity (hardest CDR)
-    "target_aligned_antibody_rmsd": 0.10,   # dock reproduced
-    "target_aligned_cdr_rmsd":      0.05,   # CDRs reproduced
+    "target_aligned_cdr_rmsd":      0.10,   # antigen-contacting loops landed
+    "target_aligned_antibody_rmsd": 0.05,   # whole-body dock reproduced
 }
 THREE2ONE = {
     "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C", "GLU": "E",
