@@ -128,7 +128,11 @@ else
         # dir (1_bb_0000_pX0_traj.qv, 1_bb_0000_Xt-1_traj.qv) -- those are
         # noisy, partially-denoised intermediate states, not real backbones,
         # and a looser glob would silently merge them in as if they were.
-        uv run python scripts/biosensor/merge_quivers.py \
+        # --namespace is essential: RFdiffusion restarts numbering at
+        # samples_design_0 in every chunk, so without a per-chunk prefix the
+        # merge's dedup discards all but the first chunk. A 20-chunk run
+        # silently yielded 50 backbones instead of 1000.
+        uv run python scripts/biosensor/merge_quivers.py --namespace \
             "$CHUNKS"/1_bb_[0-9][0-9][0-9][0-9].qv --output "$BB" --overwrite
     fi
     # Never record step 1 as complete on an empty merge -- .step1.done would
