@@ -27,7 +27,12 @@ set -euo pipefail
 : "${CLEAN:=false}"                # false = resume; true requires explicit delete opt-in
 : "${DESIGNS_DIR:=designs}"        # output root, relative to the RFantibody checkout
 : "${DETERMINISTIC:=false}"         # opt-in RFdiffusion/MPNN/RF2 reproducibility
+: "${HOTSPOTS_EXPECTED:=}"          # optional 3-letter residues, one per hotspot
 
+# NB: these arrays are EMPTY on the default path, and bash before 4.4 treats
+# "${arr[@]}" on an empty array as an unbound variable under `set -u` -- which
+# would kill every batch at the first GPU call. Expansions below therefore use
+# the guarded ${arr[@]+"${arr[@]}"} form.
 case "$DETERMINISTIC" in
     true) DETERMINISTIC_ARGS=(--deterministic); RF2_EXTRA_ARGS=(--seed "$RF2_SEED") ;;
     false) DETERMINISTIC_ARGS=(); RF2_EXTRA_ARGS=() ;;
@@ -125,8 +130,14 @@ echo "output_root=$OUTDIR"
 # it can silently turn a multi-day campaign into a different experiment.
 # Validate the PDB author numbering and record the resolved residue identities
 # before the first GPU command.
+# Existence alone is a weak test: the off-by-43 Surf2Spot indices are real
+# residues, just the wrong ones. Callers that know which residues they mean
+# should set HOTSPOTS_EXPECTED so a slipped numbering frame is rejected here.
+EXPECTED_ARGS=()
+[ -n "$HOTSPOTS_EXPECTED" ] && EXPECTED_ARGS=(--expected "$HOTSPOTS_EXPECTED")
 _run_logged "validate-hotspots" uv run python scripts/biosensor/validate_hotspots.py \
-    --pdb "$TARGET" --hotspots "$HOTSPOTS" --label "$NAME"
+    --pdb "$TARGET" --hotspots "$HOTSPOTS" --label "$NAME" \
+    ${EXPECTED_ARGS[@]+"${EXPECTED_ARGS[@]}"}
 
 # ---- step 1: RFdiffusion (chunked) -----------------------------------------
 # NOTE: gated by per-chunk count, NOT a single .step1.done flag -- if NUM_DESIGNS
@@ -168,7 +179,7 @@ else
         if ! _run_logged "rfdiffusion" uv run rfdiffusion \
             --target "$TARGET" --framework "$FRAMEWORK" --output-quiver "$CHUNK_QV" \
             --num-designs "$THIS_N" --design-loops "$LOOPS" --hotspots "$HOTSPOTS" \
-            "${DETERMINISTIC_ARGS[@]}"; then
+            ${DETERMINISTIC_ARGS[@]+"${DETERMINISTIC_ARGS[@]}"}; then
             echo "ERROR: RFdiffusion failed on chunk $IDX (GPU OOM? see above)"; exit 1
         fi
         [ -s "$CHUNK_QV" ] || { echo "ERROR: RFdiffusion chunk $IDX wrote no backbones"; exit 1; }
@@ -253,7 +264,7 @@ else
             --input-quiver "$CHUNK_IN" --output-quiver "$CHUNK_OUT" \
             --loops H1,H2,H3 \
             --seqs-per-struct "$SEQS_PER_STRUCT" --temperature "$MPNN_TEMP" \
-            "${DETERMINISTIC_ARGS[@]}"
+            ${DETERMINISTIC_ARGS[@]+"${DETERMINISTIC_ARGS[@]}"}
         [ -s "$CHUNK_OUT" ] || { echo "ERROR: ProteinMPNN chunk $IDX produced empty output"; exit 1; }
         touch "$CHUNK_DONE"
     done
@@ -295,7 +306,7 @@ else
         _run_logged "rf2" uv run rf2 \
             --input-quiver "$CHUNK_IN" --output-quiver "$CHUNK_OUT" \
             --num-recycles "$RF2_RECYCLES" --hotspot-show-prop "$RF2_HOTSPOT_SHOW" \
-            "${RF2_EXTRA_ARGS[@]}"
+            ${RF2_EXTRA_ARGS[@]+"${RF2_EXTRA_ARGS[@]}"}
         [ -s "$CHUNK_OUT" ] || { echo "ERROR: RF2 chunk $IDX produced empty output"; exit 1; }
         touch "$CHUNK_DONE"
     done

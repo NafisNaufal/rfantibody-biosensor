@@ -212,6 +212,7 @@ while true; do
             NAME="$BATCH_NAME"
             TARGET="$TARGET_PDB"
             HOTSPOTS="$SPOT_HOTSPOTS"
+            HOTSPOTS_EXPECTED="${HOTSPOT_EXPECTED[$i]}"
             DESIGNS_DIR="$DESIGNS_DIR"
             NUM_DESIGNS="$BATCH_SIZE"
             CHUNK_SIZE="$BATCH_SIZE"
