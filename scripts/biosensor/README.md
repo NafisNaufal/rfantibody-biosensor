@@ -18,28 +18,35 @@ filters, scores, ranks, and de-duplicates RF2's output into a short list of winn
 ## Files
 
 ```
-run_ace.sh / run_ebpc.sh / run_esp.sh   thin per-target wrappers (set NAME/TARGET/HOTSPOTS)
+run_ace.sh / run_ebpc.sh / run_esp.sh   thin per-target wrappers
+run_ace_loop.sh                         continuous, resumable Ace campaign
+run_custom.sh                           simple CLI for a new hotspot set
 _pipeline.sh                            the shared 5-step pipeline (sourced by the wrappers)
 run_all.sh                              all three, sequential, + cross-target summary
 filter_backbones.py                     step 2: Cα-break + docking filter
 select_designs.py                       step 5: pAE/RMSD/PRODIGY(/Rosetta) filter + rank + cluster
+validate_hotspots.py                    PDB author-numbering preflight
 score_rosetta.py                        optional Rosetta interface ddG (runs in your PyRosetta env)
 summarize.py                            combine all targets into designs/SUMMARY.csv
 ```
 
-## The 3 experiments
+## Targets and Ace hotspot sites
 
 | # | Target | Input file | Hotspots (spot #1) | Output dir |
 |---|--------|------------|--------------------|------------|
 | 1 | Ace  | `inputs/2Z1P.pdb`      | `A180,A182,A193,A195`        | `designs/Ace/`  |
+| 4 | Ace  | `inputs/2Z1P.pdb`      | D229: `A229,A231,A236,A238` | `designs/new_hotspots/` |
+| 5 | Ace  | `inputs/2Z1P.pdb`      | S295: `A295,A297,A300,A308,A310,A311` | `designs/new_hotspots/` |
 | 2 | EbpC | `inputs/EBPC_9LLW.pdb` | `A61,A62,A63,A64,A65,A67`    | `designs/EbpC/` |
 | 3 | Esp  | `inputs/AF_Esp.pdb`    | `A69,A71,A74`                | `designs/Esp/`  |
 
-Shared: framework `inputs/Scaffold.pdb`, loops `H1:10,H2:6,H3:16`,
-`--deterministic`. Each wrapper sets **`NUM_DESIGNS=1000`** and
+Shared: framework `inputs/Scaffold.pdb`, loops `H1:10,H2:6,H3:16`.
+Set `DETERMINISTIC=true` to make RFdiffusion/ProteinMPNN/RF2 reproducible;
+the default is `false` to preserve the prior generation behavior. Each wrapper sets **`NUM_DESIGNS=1000`** and
 **`SEQS_PER_STRUCT=4`**. For a quick pilot, set `NUM_DESIGNS=20` in a wrapper.
 **Backup hotspots** (#2/#3) are in each wrapper — swap the `HOTSPOTS=` line if
-spot #1 docks poorly. Any tunable (cutoffs, `CLEAN`, …) can be overridden the same way.
+spot #1 docks poorly. Advanced tunables (cutoffs, `CLEAN`, …) remain available
+as environment variables, but the common new-hotspot path uses CLI options.
 
 ## How to run
 
@@ -49,11 +56,44 @@ bash scripts/biosensor/run_ace.sh
 
 # all three + summary
 bash scripts/biosensor/run_all.sh
+
+# continuous run for only the new D229 site
+bash scripts/biosensor/run_ace_loop.sh --spot D229 --batch-size 50 \
+  --output-root designs/new_hotspots
+
+# validate the default new-site selection without starting RFdiffusion
+bash scripts/biosensor/run_ace_loop.sh --dry-run
+
+# one-shot arbitrary hotspot run
+bash scripts/biosensor/run_custom.sh --name Ace_D229 \
+  --target inputs/2Z1P.pdb --hotspots A229,A231,A236,A238 --designs 50
 ```
 
 > - **First run needs internet** (login node) so PRODIGY installs once; after that it's cached.
-> - **Re-runs wipe and restart** (`CLEAN=true`). Set `CLEAN=false` in a wrapper to skip completed steps.
+> - Runs resume by default (`CLEAN=false`). A destructive restart is blocked unless
+>   `ALLOW_DESTRUCTIVE_CLEAN=true` is explicitly set; use a new `--name` for a new
+>   experiment.
+> - `DETERMINISTIC` defaults to `false`. Keep it off for the continuous campaign:
+>   each chunk is a fresh model invocation, so a fixed per-invocation seed can
+>   regenerate the same chunk-local design indices. Use `DETERMINISTIC=true`
+>   only for a small reproducibility/debug run.
 > - Everything is logged to `designs/<Target>/run.log` with per-step timing.
+
+### Adding or testing a hotspot
+
+Use `run_custom.sh` for a new residue set; it validates every chain/residue
+against the target PDB before RFdiffusion starts and prints the resolved
+three-letter identities. For example, the Surf2Spot sequential indices must be
+mapped to 2Z1P author numbering: `A229=ASP A231=VAL A236=THR A238=TYR`.
+
+The continuous Ace runner knows `spot1`, `spot2`, `spot3`, `D229`, and `S295`;
+its default selection is only the new `D229 S295` sites. Pass `--spot D229` or
+`--spots "D229 S295"` for a focused campaign, and select an old spot explicitly
+if it is genuinely needed. New runs default to `designs/new_hotspots/`, while
+the existing `designs/` tree is retained.
+
+To fold/check an isolated campaign later, pass the same root to the aggregator:
+`DESIGNS_DIR=designs/new_hotspots bash scripts/biosensor/aggregate_all.sh`.
 
 ## The geometry filter (step 2)
 
@@ -120,7 +160,7 @@ unset, the step is simply skipped and PRODIGY carries the energy term.
 
 ## Outputs
 
-Each target, in `designs/<Target>/`:
+Each run, in `designs/<run-name>/` (or the selected output root):
 
 ```
 1_backbones.qv     RFdiffusion output (all 1000)

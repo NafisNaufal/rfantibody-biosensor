@@ -18,20 +18,48 @@ set -euo pipefail
 : "${MPNN_TEMP:=0.1}"              # step 3: low temp = stable, expressible seqs
 : "${RF2_RECYCLES:=10}"            # step 4
 : "${RF2_HOTSPOT_SHOW:=0.0}"       # step 4: 0 = blind = stricter filter
+: "${RF2_SEED:=0}"                  # step 4 when DETERMINISTIC=true
 : "${PAE_CUTOFF:=10}"              # step 5
 : "${RMSD_CUTOFF:=2.0}"            # step 5: dock AND CDR RMSD both < this
 : "${DG_CUTOFF:=-10.0}"            # step 5: PRODIGY ΔG must be < this (kcal/mol)
 : "${LDDT_CUTOFF:=0.9}"           # step 5: RF2 pred_lddt must be >= this (0-1)
 : "${TOP_N:=10}"                   # step 5: number of distinct winners to extract
-: "${CLEAN:=false}"                # false = resume from last completed chunk; true = wipe and restart
+: "${CLEAN:=false}"                # false = resume; true requires explicit delete opt-in
+: "${DESIGNS_DIR:=designs}"        # output root, relative to the RFantibody checkout
+: "${DETERMINISTIC:=false}"         # opt-in RFdiffusion/MPNN/RF2 reproducibility
+
+case "$DETERMINISTIC" in
+    true) DETERMINISTIC_ARGS=(--deterministic); RF2_EXTRA_ARGS=(--seed "$RF2_SEED") ;;
+    false) DETERMINISTIC_ARGS=(); RF2_EXTRA_ARGS=() ;;
+    *) echo "ERROR: DETERMINISTIC must be true or false (got '$DETERMINISTIC')" >&2; exit 2 ;;
+esac
+
+: "${NAME:?NAME is required (use a unique run name)}"
+: "${TARGET:?TARGET is required (path relative to the RFantibody checkout)}"
+: "${HOTSPOTS:?HOTSPOTS is required (for example A229,A231,A236,A238)}"
+
+case "$NAME" in
+    ""|.|..|*/*)
+        echo "ERROR: NAME must be a simple directory name without '/' (got '$NAME')" >&2
+        exit 2
+        ;;
+esac
 
 # ---- setup -----------------------------------------------------------------
 PROJECT_ROOT="$(cd "$PIPELINE_DIR/../.." && pwd)"
 cd "$PROJECT_ROOT"
 
-OUTDIR="designs/$NAME"
+OUTDIR="$DESIGNS_DIR/$NAME"
 CHUNKS="$OUTDIR/chunks"
-if [ "$CLEAN" = "true" ]; then rm -rf "$OUTDIR"; fi
+if [ "$CLEAN" = "true" ]; then
+    if [ "${ALLOW_DESTRUCTIVE_CLEAN:-false}" != "true" ]; then
+        echo "ERROR: CLEAN=true would delete $OUTDIR." >&2
+        echo "       Use a new NAME, or explicitly set ALLOW_DESTRUCTIVE_CLEAN=true." >&2
+        exit 2
+    fi
+    echo "WARNING: deleting only the explicitly selected output directory: $OUTDIR"
+    rm -rf "$OUTDIR"
+fi
 mkdir -p "$OUTDIR" "$CHUNKS"
 LOG="$OUTDIR/run.log"
 exec > >(tee -a "$LOG") 2>&1
@@ -91,6 +119,14 @@ PYEOF
 
 echo "================ $NAME  @ $(date '+%Y-%m-%d %H:%M:%S') ================"
 echo "target=$TARGET  hotspots=$HOTSPOTS  loops=$LOOPS  n=$NUM_DESIGNS  chunk=$CHUNK_SIZE"
+echo "output_root=$OUTDIR"
+
+# A missing or mis-numbered hotspot is not necessarily rejected by the model;
+# it can silently turn a multi-day campaign into a different experiment.
+# Validate the PDB author numbering and record the resolved residue identities
+# before the first GPU command.
+_run_logged "validate-hotspots" uv run python scripts/biosensor/validate_hotspots.py \
+    --pdb "$TARGET" --hotspots "$HOTSPOTS" --label "$NAME"
 
 # ---- step 1: RFdiffusion (chunked) -----------------------------------------
 # NOTE: gated by per-chunk count, NOT a single .step1.done flag -- if NUM_DESIGNS
@@ -131,7 +167,8 @@ else
         # and 4 have carried this guard for a while; step 1 had not.
         if ! _run_logged "rfdiffusion" uv run rfdiffusion \
             --target "$TARGET" --framework "$FRAMEWORK" --output-quiver "$CHUNK_QV" \
-            --num-designs "$THIS_N" --design-loops "$LOOPS" --hotspots "$HOTSPOTS"; then
+            --num-designs "$THIS_N" --design-loops "$LOOPS" --hotspots "$HOTSPOTS" \
+            "${DETERMINISTIC_ARGS[@]}"; then
             echo "ERROR: RFdiffusion failed on chunk $IDX (GPU OOM? see above)"; exit 1
         fi
         [ -s "$CHUNK_QV" ] || { echo "ERROR: RFdiffusion chunk $IDX wrote no backbones"; exit 1; }
@@ -149,7 +186,11 @@ else
         # dir (1_bb_0000_pX0_traj.qv, 1_bb_0000_Xt-1_traj.qv) -- those are
         # noisy, partially-denoised intermediate states, not real backbones,
         # and a looser glob would silently merge them in as if they were.
-        _run_logged "merge-backbones" uv run python scripts/biosensor/merge_quivers.py \
+        # --namespace is essential: RFdiffusion restarts numbering at
+        # samples_design_0 in every chunk, so without a per-chunk prefix the
+        # merge's dedup discards all but the first chunk. A 20-chunk run
+        # silently yielded 50 backbones instead of 1000.
+        _run_logged "merge-backbones" uv run python scripts/biosensor/merge_quivers.py --namespace \
             "$CHUNKS"/1_bb_[0-9][0-9][0-9][0-9].qv --output "$BB" --overwrite
     fi
     # Never record step 1 as complete on an empty merge -- .step1.done would
@@ -211,7 +252,8 @@ else
         _run_logged "proteinmpnn" uv run proteinmpnn \
             --input-quiver "$CHUNK_IN" --output-quiver "$CHUNK_OUT" \
             --loops H1,H2,H3 \
-            --seqs-per-struct "$SEQS_PER_STRUCT" --temperature "$MPNN_TEMP"
+            --seqs-per-struct "$SEQS_PER_STRUCT" --temperature "$MPNN_TEMP" \
+            "${DETERMINISTIC_ARGS[@]}"
         [ -s "$CHUNK_OUT" ] || { echo "ERROR: ProteinMPNN chunk $IDX produced empty output"; exit 1; }
         touch "$CHUNK_DONE"
     done
@@ -252,7 +294,8 @@ else
         echo "  [chunk $IDX] running RF2..."
         _run_logged "rf2" uv run rf2 \
             --input-quiver "$CHUNK_IN" --output-quiver "$CHUNK_OUT" \
-            --num-recycles "$RF2_RECYCLES" --hotspot-show-prop "$RF2_HOTSPOT_SHOW"
+            --num-recycles "$RF2_RECYCLES" --hotspot-show-prop "$RF2_HOTSPOT_SHOW" \
+            "${RF2_EXTRA_ARGS[@]}"
         [ -s "$CHUNK_OUT" ] || { echo "ERROR: RF2 chunk $IDX produced empty output"; exit 1; }
         touch "$CHUNK_DONE"
     done
