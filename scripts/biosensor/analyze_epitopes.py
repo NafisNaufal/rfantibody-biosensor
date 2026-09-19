@@ -48,7 +48,7 @@ WEIGHTS = {
     "target_aligned_cdr_rmsd":      0.10,
     "target_aligned_antibody_rmsd": 0.05,
 }
-BACKBONE_RE = re.compile(r"samples_design_(\d+)_")
+BACKBONE_RE = re.compile(r"^(?P<namespace>.*__)?samples_design_(?P<index>\d+)_")
 
 
 def fnum(x):
@@ -66,6 +66,22 @@ def identity(a, b):
     return sum(x == y for x, y in zip(a, b)) / len(a) * 100
 
 
+def backbone_id(tag):
+    """Return the RFdiffusion backbone identity encoded in a design tag.
+
+    A one-shot batch uses tags such as ``samples_design_48_dldesign_0``.
+    Continuous batches are namespaced by ``aggregate_batches.py`` and look
+    like ``000025_20260909_083442__samples_design_48_dldesign_0``.  The local
+    RFdiffusion index restarts at zero in every batch, so the namespace is part
+    of the backbone identity and must be retained.
+    """
+    m = BACKBONE_RE.match(tag)
+    if not m:
+        return tag
+    namespace = m.group("namespace") or ""
+    return f"{namespace}samples_design_{m.group('index')}"
+
+
 def load(spec):
     """'label=path/to/5_selection.csv' -> (label, survivor rows sorted by rank)."""
     label, _, path = spec.partition("=")
@@ -75,8 +91,7 @@ def load(spec):
     rows.sort(key=lambda r: float(r["rank"]) if r.get("rank") else 1e9)
     for r in rows:
         r["_ep"] = label
-        m = BACKBONE_RE.search(r["tag"])
-        r["_bb"] = m.group(1) if m else r["tag"]
+        r["_bb"] = backbone_id(r["tag"])
     return label, rows
 
 
