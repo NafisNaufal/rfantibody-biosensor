@@ -8,11 +8,16 @@ trap 'echo ""; echo "Stopped."; exit 130' INT TERM
 
 TARGET_NAME="Ace"
 TARGET_PDB="inputs/2Z1P.pdb"
-HOTSPOT_NAMES=("spot1" "spot2" "spot3")
+HOTSPOT_NAMES=("spot1" "spot2" "spot3" "D229" "S295")
 HOTSPOT_VALUES=(
     "A180,A182,A193,A195"
     "A206,A300,A301,A304"
     "A146,A147,A158"
+    # Surf2Spot-derived sites, in 2Z1P AUTHOR numbering. Surf2Spot reports
+    # sequential indices over resolved residues only; 2Z1P chain A starts at 31
+    # with four gaps, so its indices run 43 low (186/188/193/195 -> 229/231/236/238).
+    "A229,A231,A236,A238"              # D229 V231 T236 Y238
+    "A295,A297,A300,A308,A310,A311"    # S295 D297 Y300 T308 E310 K311
 )
 
 : "${BATCH_SIZE:=50}"
@@ -32,6 +37,43 @@ for _s in $SPOTS; do
         *) echo "ERROR: unknown spot '$_s' (known: ${HOTSPOT_NAMES[*]})" >&2; exit 1 ;;
     esac
 done
+
+# Guard the residue numbering before any GPU time is spent. A hotspot that does
+# not exist in the target is not an error RFdiffusion reports -- it just builds
+# against whatever is left, so an indefinite run can burn weeks designing
+# binders for the wrong surface. This is the exact failure mode the Surf2Spot
+# +43 offset sets up, so check every selected set against the PDB up front.
+#
+# NB: existence is a weak test on its own -- the off-by-43 indices (186, 188)
+# are perfectly real residues, just the wrong ones. So print each hotspot's
+# identity and eyeball it against what you meant: D229 V231 T236 Y238 should
+# read ASP VAL THR TYR, and anything else means the numbering slipped.
+validate_hotspots() {
+    local pdb="$1" name="$2" spec="$3" h ch num aa rc=0 ids=""
+    for h in $(echo "$spec" | tr ',' ' '); do
+        ch="${h:0:1}"; num="${h:1}"
+        aa=$(awk -v c="$ch" -v n="$num" '
+                substr($0,1,4)=="ATOM" && substr($0,22,1)==c && substr($0,23,4)+0==n {
+                    print substr($0,18,3); exit }' "$pdb")
+        if [ -z "$aa" ]; then
+            echo "ERROR: $name hotspot $h is not a resolved residue in $pdb" >&2
+            rc=1
+        else
+            ids="$ids $h=$aa"
+        fi
+    done
+    [ "$rc" -eq 0 ] && echo "  $name:$ids"
+    return $rc
+}
+
+[ -f "$TARGET_PDB" ] || { echo "ERROR: $TARGET_PDB not found (run from the rfantibody/ dir)" >&2; exit 1; }
+for _s in $SPOTS; do
+    for _i in "${!HOTSPOT_NAMES[@]}"; do
+        [ "${HOTSPOT_NAMES[$_i]}" = "$_s" ] || continue
+        validate_hotspots "$TARGET_PDB" "$_s" "${HOTSPOT_VALUES[$_i]}" || exit 1
+    done
+done
+
 echo "Cycling hotspot set(s): $SPOTS"
 
 # A batch is only "finished" once it either completed selection or the
@@ -58,7 +100,6 @@ find_resumable_batch() {
 }
 
 ROUND=1
-FAILS=0     # consecutive failures, drives the backoff below
 while true; do
     ROUND_ID="$(printf '%06d' "$ROUND")"
 
@@ -100,27 +141,13 @@ while true; do
             source "$PIPELINE_DIR/_pipeline.sh"
         ); then
             echo "Batch $BATCH_NAME finished."
-            FAILS=0
         else
             rc=$?
             if [ "$rc" -eq 130 ] || [ "$rc" -eq 143 ]; then
                 echo "Stopped."
                 exit "$rc"
             fi
-            # A failed batch keeps no terminal marker, so it is picked up again
-            # next round. Without a backoff that becomes a hot spin loop when
-            # the cause is persistent (wrong working directory, missing env,
-            # GPU OOM) -- which is exactly how ~13 days were burned unnoticed.
-            FAILS=$((FAILS + 1))
-            if [ "$FAILS" -ge 6 ]; then BACKOFF=900; else BACKOFF=$((30 << (FAILS - 1))); fi
-            echo "WARNING: batch $BATCH_NAME failed with exit code $rc (consecutive failures: $FAILS)."
-            if [ "$FAILS" -ge 3 ]; then
-                echo "  >> $FAILS batches have failed in a row. This is very likely systematic"
-                echo "  >> (wrong working directory, missing uv env, or GPU OOM) rather than"
-                echo "  >> bad luck. Read the error above instead of leaving this running."
-            fi
-            echo "  backing off ${BACKOFF}s before the next attempt."
-            sleep "$BACKOFF"
+            echo "WARNING: batch $BATCH_NAME failed with exit code $rc; continuing."
         fi
 
         # trajectory files are multi-GB and never needed past this point
